@@ -1,0 +1,24 @@
+[Unit]
+Description=AquaGuard Water Management System
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Root required for rpi-ws281x DMA/PWM and GPIO access
+User=root
+WorkingDirectory=/opt/aquaguard
+ExecStart=/opt/aquaguard/venv/bin/python -m aquaguard --config /etc/aquaguard/config.yaml
+Restart=on-failure
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Hardening
+ProtectSystem=strict
+ReadWritePaths=/var/lib/aquaguard
+PrivateTmp=true
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target

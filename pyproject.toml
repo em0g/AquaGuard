@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "aquaguard"
+version = "0.1.0"
+description = "AquaGuard — standalone replacement for Fairtrail VFB cloud service"
+requires-python = ">=3.11"
+dependencies = [
+    "smbus2>=0.4",
+    "RPi.GPIO>=0.7",
+    "rpi-ws281x>=5.0",
+    "spidev>=3.6",
+    "paho-mqtt>=1.6",
+    "fastapi>=0.104",
+    "uvicorn[standard]>=0.24",
+    "pyyaml>=6.0",
+    "aiofiles>=23.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.setuptools.packages.find]
+include = ["aquaguard*"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]

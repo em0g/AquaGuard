@@ -1,0 +1,186 @@
+"""Async orchestrator — starts all components in a single TaskGroup."""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import signal
+
+import uvicorn
+
+from aquaguard.config import AppConfig
+from aquaguard.event_bus import EventBus
+from aquaguard.hardware.buzzer import Buzzer
+from aquaguard.hardware.buttons import Buttons
+from aquaguard.hardware.flow import FlowSensor
+from aquaguard.hardware.gpio_alarm import GpioAlarm
+from aquaguard.hardware.i2c_bus import I2CBus
+from aquaguard.hardware.leds import LedRing
+from aquaguard.hardware.pressure import PressureSensor
+from aquaguard.hardware.temperature import TemperatureSensor
+from aquaguard.hardware.valve import ValveDriver
+from aquaguard.integrations.ha_discovery import HADiscovery
+from aquaguard.integrations.mqtt_client import MqttClient
+from aquaguard.services.alarm_manager import AlarmManager
+from aquaguard.services.consumption_monitor import ConsumptionMonitor
+from aquaguard.services.pressure_test import PressureTestService
+from aquaguard.services.scheduler import Scheduler
+from aquaguard.services.sensor_service import SensorService
+from aquaguard.services.valve_service import ValveService
+from aquaguard.storage.database import Database
+from aquaguard.storage.state import StateStore
+from aquaguard.web.server import WebServer
+
+log = logging.getLogger(__name__)
+
+
+class AquaGuardApp:
+    """Main application — wires everything together and runs as one process."""
+
+    def __init__(self, config: AppConfig) -> None:
+        self.config = config
+
+        # Event bus
+        self.event_bus = EventBus()
+
+        # Hardware
+        self.i2c = I2CBus(config.hardware.i2c_bus)
+        self.valve_driver = ValveDriver(
+            self.i2c,
+            address=config.hardware.valve_address,
+            poweroff_delay=config.hardware.motor_poweroff_delay,
+        )
+        self.pressure_sensor = PressureSensor(
+            self.i2c, address=config.hardware.pressure_address
+        )
+        self.temp_sensor = TemperatureSensor(
+            device_id=config.hardware.temp_device_id
+        )
+        self.flow_sensor = FlowSensor(
+            spi_bus=0, spi_device=0, spi_speed_hz=1_000_000,
+        )
+        self.buzzer = Buzzer(pin=config.hardware.buzzer_pin)
+        self.buttons = Buttons(
+            self.event_bus,
+            on_pin=config.hardware.button_on_pin,
+            off_pin=config.hardware.button_off_pin,
+            reset_pin=config.hardware.button_reset_pin,
+        )
+        self.gpio_alarm = GpioAlarm(self.event_bus)
+        self.leds = LedRing(self.event_bus, led_count=config.hardware.led_count)
+
+        # Storage
+        self.state_store = StateStore(config.storage.state_path)
+        self.database = Database(config.storage.db_path)
+
+        # Services
+        self.valve_service = ValveService(
+            self.valve_driver, self.state_store, self.event_bus,
+            motor_delay=config.hardware.motor_poweroff_delay,
+        )
+        self.sensor_service = SensorService(
+            self.pressure_sensor, self.temp_sensor, self.event_bus
+        )
+        self.sensor_service.set_flow_rate_getter(lambda: self.flow_sensor.flow_rate)
+        self.alarm_manager = AlarmManager(
+            config.alarms, self.event_bus, self.buzzer,
+            self.gpio_alarm, self.state_store,
+        )
+        self.pressure_test = PressureTestService(
+            self.pressure_sensor, config.alarms, self.event_bus, self.database
+        )
+        self.scheduler = Scheduler(
+            config.pressure_test, self.pressure_test, self.valve_service,
+            self.event_bus,
+        )
+        self.consumption_monitor = ConsumptionMonitor(
+            config.consumption, self.event_bus,
+        )
+
+        # Integrations
+        self.mqtt = MqttClient(config.mqtt, config.device)
+        self.ha_discovery = HADiscovery(
+            config.device, self.mqtt, self.event_bus,
+            self.valve_service, self.sensor_service, self.alarm_manager,
+            self.consumption_monitor,
+        )
+        self.ha_discovery.set_pressure_test_callback(self._run_manual_test)
+
+        # Web
+        self.web_server = WebServer(
+            self.event_bus, self.valve_service, self.sensor_service,
+            self.alarm_manager, self.database,
+        )
+        self.web_server.set_pressure_test_callback(self._run_manual_test)
+
+    async def _run_manual_test(self) -> None:
+        """Run a manual pressure test (triggered via web/MQTT)."""
+        await self.pressure_test.run_test(test_type="manual")
+
+    async def _init_all(self) -> None:
+        """Initialise all components."""
+        await self.i2c.open()
+        await self.state_store.load()
+        await self.database.open()
+
+        await self.valve_service.init()
+        await self.sensor_service.init()
+        await self.flow_sensor.init()
+        await self.buzzer.init()
+        await self.buttons.init()
+        await self.gpio_alarm.init()
+        await self.leds.init()
+        await self.alarm_manager.init()
+
+        # Connect flow episode callback to database storage
+        self.flow_sensor.set_episode_callback(self.database.save_episode)
+        # Per-measurement callback feeds the consumption monitor
+        self.flow_sensor.set_measurement_callback(
+            self.consumption_monitor.on_measurement
+        )
+
+        await self.mqtt.connect()
+
+        log.info("All components initialised")
+
+    async def _cleanup(self) -> None:
+        """Graceful shutdown."""
+        log.info("Shutting down...")
+        await self.mqtt.disconnect()
+        await self.database.close()
+        await self.i2c.close()
+        self.flow_sensor.cleanup()
+        self.buzzer.cleanup()
+        self.gpio_alarm.cleanup()
+
+    async def run(self) -> None:
+        """Start all async tasks and run until cancelled."""
+        await self._init_all()
+
+        # Configure uvicorn for embedding
+        uvi_config = uvicorn.Config(
+            self.web_server.app,
+            host="0.0.0.0",
+            port=self.config.web.port,
+            log_level="warning",
+        )
+        uvi_server = uvicorn.Server(uvi_config)
+
+        try:
+            async with asyncio.TaskGroup() as tg:
+                tg.create_task(self.sensor_service.run_polling_loop())
+                tg.create_task(self.mqtt.run())
+                tg.create_task(self.ha_discovery.publish_state_loop())
+                tg.create_task(self.scheduler.run())
+                tg.create_task(self.buttons.run())
+                tg.create_task(self.leds.run_animation_loop())
+                tg.create_task(self.flow_sensor.run())
+                tg.create_task(uvi_server.serve())
+                log.info(
+                    "AquaGuard running — dashboard at http://0.0.0.0:%d",
+                    self.config.web.port,
+                )
+        except* KeyboardInterrupt:
+            log.info("Keyboard interrupt received")
+        finally:
+            await self._cleanup()

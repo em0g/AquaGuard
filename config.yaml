@@ -1,0 +1,39 @@
+device:
+  name: "AquaGuard"
+  id: "aquaguard01"
+mqtt:
+  host: "192.168.3.15"
+  port: 1883
+  username: "hass"
+  # password is set via /etc/aquaguard/config-secrets.yaml (not in git)
+web:
+  port: 8080
+hardware:
+  i2c_bus: 1
+  valve_address: 0x60
+  pressure_address: 0x48
+  temp_device_id: "28-0301a2791e31"
+  motor_poweroff_delay: 8
+  led_count: 34
+  buzzer_pin: 23
+  button_on_pin: 19
+  button_off_pin: 26
+  button_reset_pin: 24
+alarms:
+  low_temp_threshold: 1.6
+  low_pressure_threshold: 1.5
+  leak_drop_threshold: 1.0
+pressure_test:
+  schedule_hour: 2
+  schedule_minute: 0
+  schedule_weekday: 6       # 0=Monday, 6=Sunday
+  schedule_interval_weeks: 2
+consumption:
+  long_episode_minutes: 60       # warn if a single FLOW episode runs longer
+  episode_volume_liters: 300.0   # warn if a single episode exceeds this volume
+  drip_min_flow: 5.0             # drip band lower bound (L/h)
+  drip_max_flow: 25.0            # drip band upper bound (L/h, below episode start)
+  drip_duration_minutes: 120     # sustained drip-band flow before warning
+storage:
+  db_path: "/var/lib/aquaguard/aquaguard.db"
+  state_path: "/var/lib/aquaguard/state.json"

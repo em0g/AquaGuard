@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="sv" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>AquaGuard</title>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@picocss/pico@2/css/pico.min.css">
+  <style>
+    :root {
+      --ag-green: #66FF33;
+      --ag-red: #D80010;
+      --ag-blue: #00DDFF;
+      --ag-yellow: #FFF700;
+    }
+    body { padding: 1rem; }
+    h1 { text-align: center; margin-bottom: 0.5rem; }
+    .subtitle { text-align: center; color: var(--pico-muted-color); margin-bottom: 1.5rem; }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+    @media (max-width: 768px) {
+      .grid-2 { grid-template-columns: 1fr; }
+    }
+    .card {
+      background: var(--pico-card-background-color);
+      border: 1px solid var(--pico-muted-border-color);
+      border-radius: var(--pico-border-radius);
+      padding: 1.25rem;
+    }
+    .card h3 { margin-top: 0; }
+
+    /* Valve toggle */
+    .valve-control { text-align: center; }
+    .valve-btn {
+      font-size: 1.5rem;
+      padding: 1rem 3rem;
+      border-radius: 2rem;
+      cursor: pointer;
+      border: none;
+      color: #fff;
+      font-weight: bold;
+      transition: background 0.3s;
+    }
+    .valve-btn.open { background: var(--ag-green); color: #000; }
+    .valve-btn.closed { background: var(--ag-red); }
+    .valve-btn.transitioning { background: var(--ag-yellow); color: #000; }
+    .valve-status {
+      font-size: 1.1rem;
+      margin-top: 0.75rem;
+      font-weight: 600;
+    }
+    .valve-status.open { color: var(--ag-green); }
+    .valve-status.closed { color: var(--ag-red); }
+
+    /* Sensor values */
+    .sensor-value {
+      font-size: 2rem;
+      font-weight: bold;
+      margin: 0.5rem 0;
+    }
+    .sensor-unit { font-size: 1rem; color: var(--pico-muted-color); }
+
+    /* Alarm panel */
+    .alarm-panel { border-color: var(--ag-red); }
+    .alarm-panel.active { background: rgba(216, 0, 16, 0.15); }
+    .alarm-msg { color: var(--ag-red); font-weight: 600; }
+
+    /* Pressure test */
+    .test-progress {
+      margin: 0.5rem 0;
+      height: 6px;
+      background: var(--pico-muted-border-color);
+      border-radius: 3px;
+      overflow: hidden;
+    }
+    .test-progress-bar {
+      height: 100%;
+      background: var(--ag-blue);
+      width: 0%;
+      transition: width 0.3s;
+    }
+    .test-result { font-weight: 600; margin-top: 0.5rem; }
+    .test-result.pass { color: var(--ag-green); }
+    .test-result.fail { color: var(--ag-red); }
+
+    /* Connection status */
+    .conn-dot {
+      display: inline-block;
+      width: 10px; height: 10px;
+      border-radius: 50%;
+      margin-right: 0.4rem;
+    }
+    .conn-dot.connected { background: var(--ag-green); }
+    .conn-dot.disconnected { background: var(--ag-red); }
+    .sys-info { font-size: 0.85rem; color: var(--pico-muted-color); }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <h1>AquaGuard</h1>
+    <p class="subtitle">Water Management System</p>
+
+    <div class="grid-2">
+      <!-- Valve Control -->
+      <div class="card valve-control">
+        <h3>Valve Control</h3>
+        <button id="valveBtn" class="valve-btn closed" onclick="toggleValve()">
+          OFF
+        </button>
+        <div id="valveStatus" class="valve-status closed">Valve Closed</div>
+      </div>
+
+      <!-- Alarm Panel -->
+      <div id="alarmPanel" class="card alarm-panel">
+        <h3>Alarms</h3>
+        <div id="alarmContent">
+          <p style="color: var(--ag-green);">No active alarms</p>
+        </div>
+        <button id="resetBtn" class="outline" onclick="resetAlarm()" style="display:none;">
+          Reset Alarm
+        </button>
+      </div>
+
+      <!-- Pressure -->
+      <div class="card">
+        <h3>Pressure</h3>
+        <div id="pressure" class="sensor-value">--<span class="sensor-unit"> bar</span></div>
+      </div>
+
+      <!-- Temperature -->
+      <div class="card">
+        <h3>Temperature</h3>
+        <div id="temperature" class="sensor-value">--<span class="sensor-unit"> &deg;C</span></div>
+      </div>
+
+      <!-- Flow Rate -->
+      <div class="card">
+        <h3>Flow Rate</h3>
+        <div id="flowRate" class="sensor-value">--<span class="sensor-unit"> L/h</span></div>
+      </div>
+
+      <!-- Pressure Test -->
+      <div class="card">
+        <h3>Pressure Test</h3>
+        <button id="testBtn" class="outline" onclick="startPressureTest()">
+          Run Pressure Test
+        </button>
+        <div id="testProgress" class="test-progress" style="display:none;">
+          <div id="testProgressBar" class="test-progress-bar"></div>
+        </div>
+        <div id="testStatus"></div>
+        <div id="testResult" class="test-result"></div>
+      </div>
+
+      <!-- System Info -->
+      <div class="card" style="grid-column: 1 / -1;">
+        <h3>System</h3>
+        <div class="sys-info">
+          <span class="conn-dot disconnected" id="connDot"></span>
+          <span id="connStatus">Disconnected</span>
+          &nbsp;&middot;&nbsp;
+          <span id="lastUpdate">--</span>
+        </div>
+      </div>
+    </div>
+  </main>
+
+  <script>
+    let ws = null;
+    let valveOpen = false;
+
+    function connect() {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      ws = new WebSocket(`${proto}//${location.host}/ws`);
+
+      ws.onopen = () => {
+        document.getElementById('connDot').className = 'conn-dot connected';
+        document.getElementById('connStatus').textContent = 'Connected';
+      };
+
+      ws.onclose = () => {
+        document.getElementById('connDot').className = 'conn-dot disconnected';
+        document.getElementById('connStatus').textContent = 'Disconnected';
+        setTimeout(connect, 3000);
+      };
+
+      ws.onerror = () => ws.close();
+
+      ws.onmessage = (e) => {
+        const msg = JSON.parse(e.data);
+        handleMessage(msg);
+      };
+    }
+
+    function handleMessage(msg) {
+      const now = new Date().toLocaleTimeString();
+      document.getElementById('lastUpdate').textContent = `Updated: ${now}`;
+
+      switch (msg.type) {
+        case 'full_state':
+          updateValve(msg.valve);
+          updateSensors(msg);
+          updateAlarm(msg.alarm);
+          break;
+        case 'sensor_update':
+          updateSensors(msg);
+          break;
+        case 'valve_state':
+          updateValve(msg.state);
+          break;
+        case 'alarm':
+          updateAlarm(msg);
+          break;
+        case 'pressure_test':
+          updatePressureTest(msg);
+          break;
+        case 'pressure_test_progress':
+          updateTestProgress(msg);
+          break;
+      }
+    }
+
+    function updateValve(state) {
+      const btn = document.getElementById('valveBtn');
+      const status = document.getElementById('valveStatus');
+      valveOpen = (state === 'open');
+
+      if (state === 'open') {
+        btn.className = 'valve-btn open';
+        btn.textContent = 'ON';
+        status.className = 'valve-status open';
+        status.textContent = 'Valve Open';
+      } else if (state === 'closed') {
+        btn.className = 'valve-btn closed';
+        btn.textContent = 'OFF';
+        status.className = 'valve-status closed';
+        status.textContent = 'Valve Closed';
+      } else {
+        btn.className = 'valve-btn transitioning';
+        btn.textContent = '...';
+        status.className = 'valve-status';
+        status.textContent = state === 'opening' ? 'Opening...' : 'Closing...';
+      }
+    }
+
+    function updateSensors(data) {
+      if (data.pressure !== undefined) {
+        document.getElementById('pressure').innerHTML =
+          `${data.pressure.toFixed(2)}<span class="sensor-unit"> bar</span>`;
+      }
+      if (data.temperature !== undefined) {
+        const t = data.temperature;
+        document.getElementById('temperature').innerHTML =
+          `${t === 99.0 ? '--' : t.toFixed(1)}<span class="sensor-unit"> &deg;C</span>`;
+      }
+      if (data.flow_rate !== undefined) {
+        document.getElementById('flowRate').innerHTML =
+          `${data.flow_rate.toFixed(1)}<span class="sensor-unit"> L/h</span>`;
+      }
+    }
+
+    function updateAlarm(alarm) {
+      const panel = document.getElementById('alarmPanel');
+      const content = document.getElementById('alarmContent');
+      const resetBtn = document.getElementById('resetBtn');
+
+      if (alarm.active) {
+        panel.classList.add('active');
+        content.innerHTML = `<p class="alarm-msg">${alarm.alarm_type || 'ALARM'}: ${alarm.message || 'Active'}</p>`;
+        resetBtn.style.display = '';
+      } else {
+        panel.classList.remove('active');
+        content.innerHTML = '<p style="color: var(--ag-green);">No active alarms</p>';
+        resetBtn.style.display = 'none';
+      }
+    }
+
+    function updatePressureTest(msg) {
+      const btn = document.getElementById('testBtn');
+      const result = document.getElementById('testResult');
+      const progress = document.getElementById('testProgress');
+
+      if (msg.status === 'running') {
+        btn.disabled = true;
+        btn.textContent = 'Test Running...';
+        btn.setAttribute('aria-busy', 'true');
+        progress.style.display = '';
+        result.textContent = '';
+      } else if (msg.status === 'completed') {
+        btn.disabled = false;
+        btn.textContent = 'Run Pressure Test';
+        btn.removeAttribute('aria-busy');
+        progress.style.display = 'none';
+
+        if (msg.result === 'pass') {
+          result.className = 'test-result pass';
+          result.textContent = 'TEST PASSED';
+        } else {
+          result.className = 'test-result fail';
+          const labels = { alarm1: 'ALARM: Low Pressure', alarm2: 'ALARM: Leak Detected', aborted: 'Test Aborted' };
+          result.textContent = labels[msg.result] || msg.result;
+        }
+      }
+    }
+
+    function updateTestProgress(msg) {
+      const bar = document.getElementById('testProgressBar');
+      const status = document.getElementById('testStatus');
+      const pct = (msg.reading / msg.total) * 100;
+      bar.style.width = `${pct}%`;
+      status.textContent = `Stage ${msg.stage}: ${msg.reading}/${msg.total} (${msg.pressure.toFixed(2)} bar)`;
+    }
+
+    function toggleValve() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ command: valveOpen ? 'valve_close' : 'valve_open' }));
+    }
+
+    function startPressureTest() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ command: 'pressure_test' }));
+    }
+
+    function resetAlarm() {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify({ command: 'alarm_reset' }));
+    }
+
+    connect();
+  </script>
+</body>
+</html>
