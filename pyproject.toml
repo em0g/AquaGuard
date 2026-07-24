@@ -12,6 +12,7 @@ dependencies = [
     "RPi.GPIO>=0.7",
     "rpi-ws281x>=5.0",
     "spidev>=3.6",
+    "gpiod>=2.1",
     "paho-mqtt>=1.6",
     "fastapi>=0.104",
     "uvicorn[standard]>=0.24",

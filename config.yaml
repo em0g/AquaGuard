@@ -2,7 +2,7 @@ device:
   name: "AquaGuard"
   id: "aquaguard01"
 mqtt:
-  host: "192.168.3.15"
+  host: "192.168.1.2"        # your MQTT broker's LAN IP or hostname
   port: 1883
   username: "hass"
   # password is set via /etc/aquaguard/config-secrets.yaml (not in git)

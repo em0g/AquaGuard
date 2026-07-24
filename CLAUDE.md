@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-AquaGuard is a standalone Python replacement for the Fairtrail VFB cloud water-management service. It runs on a Raspberry Pi 3A+ (target host `AquaSentry`, 192.168.5.157), drives the original VFB hardware (motorized valve over I2C, pressure ADC, 1-wire temp sensor, SPI flow sensor, WS281x LED ring, buzzer, buttons), and integrates with Home Assistant via MQTT discovery. The legacy Node.js codebase lives under `fairtrail/` for reference only (it is git-ignored).
+AquaGuard is a standalone Python replacement for the Fairtrail VFB cloud water-management service. It runs on a Raspberry Pi 3A+ (target host referred to below as `<pi-host>` — substitute your device's hostname or LAN IP), drives the original VFB hardware (motorized valve over I2C, pressure ADC, 1-wire temp sensor, SPI flow sensor, WS281x LED ring, buzzer, buttons), and integrates with Home Assistant via MQTT discovery. The legacy Node.js codebase lives under `fairtrail/` for reference only (it is git-ignored).
 
 ## Commands
 
@@ -21,9 +21,9 @@ pytest tests/test_valve.py     # one file
 pytest -k pressure_drop -xvs   # one test by name
 
 # Deploy to RPi (root owns /opt/aquaguard, so rsync as root)
-rsync -av --rsync-path="sudo rsync" aquaguard/ pi@192.168.5.157:/opt/aquaguard/aquaguard/
-sshpass -p '...' ssh pi@192.168.5.157 'sudo systemctl restart aquaguard'
-sshpass -p '...' ssh pi@192.168.5.157 'sudo journalctl -u aquaguard -f'
+rsync -av --rsync-path="sudo rsync" aquaguard/ pi@<pi-host>:/opt/aquaguard/aquaguard/
+ssh pi@<pi-host> 'sudo systemctl restart aquaguard'
+ssh pi@<pi-host> 'sudo journalctl -u aquaguard -f'
 
 # Before touching config on the device, back it up:
 sudo cp /etc/aquaguard/config.yaml /etc/aquaguard/config.yaml.bak
