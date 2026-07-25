@@ -183,12 +183,18 @@ class LedRing:
                     tick += 1
                     await asyncio.sleep(SPIN_INTERVAL)
                 elif self._dirty:
-                    # State changed — render once then go idle
+                    # State changed — render immediately, then keep refreshing
                     self._render_frame()
                     self._dirty = False
                     await asyncio.sleep(0.5)
                 else:
-                    # Static — just sleep, no re-rendering
-                    await asyncio.sleep(0.5)
+                    # Static — re-send the same frame ~1x/s. A single corrupted
+                    # WS281x transmission (marginal data-line logic level on some
+                    # boards) would otherwise LATCH a wrong colour until the next
+                    # state change; periodic refresh lets it self-heal on the next
+                    # frame. Cost is negligible (34 pixels). Root fix for a marginal
+                    # signal is still hardware (level shifter / clean 5V data-in).
+                    self._render_frame()
+                    await asyncio.sleep(1.0)
             else:
                 await asyncio.sleep(1.0)
