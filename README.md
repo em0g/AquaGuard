@@ -105,6 +105,39 @@ Dashboard: `http://<pi-ip>:8080`. Home Assistant should pick up the device
 automatically via MQTT discovery once its MQTT integration is configured
 against the same broker.
 
+## Updating to a newer version
+
+If you installed with `git clone` + `deploy/install.sh`, updating is just
+pulling the new code and re-running the installer from your clone directory on
+the Pi:
+
+```bash
+cd aquaguard-src                 # wherever you cloned it
+git pull
+sudo ./deploy/install.sh         # overwrites the app, keeps config + data
+sudo systemctl restart aquaguard
+```
+
+`install.sh` is idempotent: it overwrites `/opt/aquaguard` but **will not touch**
+an existing `/etc/aquaguard/config.yaml` (or your `config-secrets.yaml`) or the
+state/database in `/var/lib/aquaguard`. It also refreshes the venv, so a pull
+that changed dependencies is handled too.
+
+Verify the restart picked up the new code:
+
+```bash
+journalctl -u aquaguard -f       # look for "LED ring initialised", "Overlaid secrets", no tracebacks
+```
+
+To update just one file without re-running the installer (e.g. a single hotfix),
+copy it into place and restart:
+
+```bash
+cd aquaguard-src && git pull
+sudo cp aquaguard/hardware/leds.py /opt/aquaguard/aquaguard/hardware/leds.py
+sudo systemctl restart aquaguard
+```
+
 ## Local development (off-device)
 
 ```bash
