@@ -36,19 +36,30 @@ sudo reboot
 (Or manually add to `/boot/firmware/config.txt`: `dtparam=i2c_arm=on`,
 `dtparam=spi=on`, `dtoverlay=w1-gpio`.)
 
-Verify after reboot:
+Verify after reboot. These device nodes only appear once the kernel has the
+interface enabled, so "no `No such file or directory`" means I2C and SPI are on:
 
 ```bash
 ls /dev/i2c-1 /dev/spidev0.0 /dev/gpiochip0
 ls /sys/bus/w1/devices/            # should show a 28-xxxxxxxxxxxx entry — that's your sensor's device_id
 ```
 
+Two caveats: `/dev/gpiochip0` exists on every Pi regardless (GPIO needs no
+enabling), so only `i2c-1` and `spidev0.0` actually confirm anything here. And a
+node existing only means the bus is exposed, not that a device answers on it — to
+check the hardware actually responds, use `sudo i2cdetect -y 1` and look for the
+expected addresses in the grid.
+
 ### 2. Install system dependencies
 
 ```bash
 sudo apt update
-sudo apt install -y git python3-venv python3-pip i2c-tools libgpiod2
+sudo apt install -y git python3-venv python3-pip i2c-tools
 ```
+
+(The `gpiod` PyPI wheel used for the buttons bundles libgpiod statically, so no
+`libgpiod2`/`libgpiod3` system package is required. If you want the `gpioinfo` /
+`gpioget` CLI tools for debugging, install `gpiod` — but the app does not need it.)
 
 ### 3. Clone and install
 
