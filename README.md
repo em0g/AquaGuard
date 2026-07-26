@@ -180,15 +180,66 @@ reference device contradicts it. On the working unit:
   the CPU governor is the default `ondemand`.
 - **No watchdog, no cron jobs, no rc.local**, and no udev rules of our own.
 
-In other words there is **no host-level tuning behind the LED ring working**.
-If a ring is glitching (wrong colour on the pixels around the data-in seam,
-flicker, freezing in the wrong colour), the difference is the power feed and
-logic level — the original design puts **12 V into the IO/carrier board** the Pi
-sits on, and the ring's data line is driven through that board's level shifter.
-Feeding only 5 V to the Pi and driving DIN straight off GPIO 18 gives a marginal
-3.3 V logic level into a 5 V strip. Also check the Pi model: `rpi_ws281x` drives
-PWM/DMA directly, which behaves differently on a Pi 4 and does not work at all
-on a Pi 5.
+In other words **nothing exotic was added to this host** to make the LED ring
+work. That is a description of the working device, not proof that host config is
+irrelevant — see below.
+
+### The ring glitch: what has been ruled out
+
+Symptom: wrong colour on the pixels around the data-in seam, flicker, or the
+ring freezing in the wrong colour.
+
+Ruled out so far:
+
+- **The power supply.** Tested 2026-07-26 by running the unit on a different AC
+  adapter: behaviour was identical to the original adapter. The glitch is not
+  caused by the supply, so do not go looking for a "wrong PSU" or a 12 V vs 5 V
+  feed explanation.
+- **The LED code.** `aquaguard/hardware/leds.py` was verified against the
+  original firmware: same ring indices (`0–29`), same status LEDs (30–33), same
+  colours, same 800 kHz / DMA 10 / `WS2811_STRIP_RGB` setup. A second device
+  running a byte-identical clone of this tree shows the glitch while this one
+  does not — identical code cannot be the difference.
+
+Not ruled out — and the only lead left:
+
+- **Host/OS configuration on the Pi itself.** The section above records what the
+  *working* device looks like, which is not the same as saying host config is
+  irrelevant: it only says nothing exotic was added here. The reference device
+  showed this exact glitch early in the project and stopped showing it after
+  changes made **on the device**, not in the code. Nobody has yet compared the
+  two Pis side by side, so that comparison is the next step, not another theory.
+
+`deploy/collect-host-fingerprint.sh` collects that comparison:
+
+```bash
+sudo ./deploy/collect-host-fingerprint.sh > my-fingerprint.txt
+```
+
+It prints no secrets — hostname and root PARTUUID are redacted — so the output
+is safe to hand to someone else. Then diff it against a capture from a device
+whose ring is known good. Those captures are **not checked in**: they describe
+one specific machine down to its board revision and firmware build, which does
+not belong in a public repo (`deploy/*fingerprint*.txt` is gitignored). Ask
+whoever runs a working unit for theirs.
+
+Things in there that are worth looking at first if the diff is not empty:
+the board revision, `GPIO 18` reporting `a5` (PWM0) rather than an input,
+the `rpi_ws281x` version, and whether anything is actually *playing* audio —
+PWM0 is shared between the ring and the headphone output, and a running
+PipeWire graph holding `/dev/snd` is not the same thing as audio being played.
+
+Until that diff exists the cause is **unidentified**. Do not write a new theory
+into this file until it has been tested on hardware.
+
+Unrelated but worth knowing when someone reports a dead ring rather than a
+glitching one: `rpi_ws281x` drives PWM/DMA directly, which behaves differently
+on a Pi 4 and does not work at all on a Pi 5.
+
+The app does carry one mitigation for the *symptom*: the static frame is
+re-sent roughly once a second (`run_animation_loop`), so a single corrupt
+transmission self-heals instead of sticking until the next valve change. That is
+a workaround, not a fix.
 
 ## Updating to a newer version
 

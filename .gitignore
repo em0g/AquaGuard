@@ -11,3 +11,6 @@ fairtrail/
 config-local.yaml
 config-secrets.yaml
 .pytest_cache/
+
+# Host fingerprints describe a specific device — keep them out of a public repo
+deploy/*fingerprint*.txt
