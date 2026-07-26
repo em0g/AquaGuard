@@ -173,6 +173,7 @@ class AquaGuardApp:
                 tg.create_task(self.ha_discovery.publish_state_loop())
                 tg.create_task(self.scheduler.run())
                 tg.create_task(self.buttons.run())
+                tg.create_task(self.gpio_alarm.run())
                 tg.create_task(self.leds.run_animation_loop())
                 tg.create_task(self.flow_sensor.run())
                 tg.create_task(uvi_server.serve())
