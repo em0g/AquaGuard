@@ -14,10 +14,9 @@ Assistant to decide whether to notify:
                      `burst_duration_seconds`, i.e. a pipe failure.
 
 Shutoff tier — closes the valve and raises a latched alarm. Each condition
-has its own `enable_shutoff_*` flag; only `burst` is enabled by default,
-because a burst is the one case where waiting for a human costs real damage.
-`long_episode` and `large_volume` can legitimately be a long shower or filling
-a pool, so they warn only until the user opts in.
+has its own `enable_shutoff_*` flag and **all of them default off**: shutting
+off the water to a house is the owner's decision, not a default. Enable a
+condition only after watching its warning behave in Home Assistant.
 
 Warnings are latched per-episode (or until the flow leaves the band) so we
 don't spam HA with repeated events for the same condition.

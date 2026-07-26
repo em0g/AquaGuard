@@ -39,9 +39,11 @@ consumption:
   shutoff_episode_volume_liters: 500.0
   burst_flow_lph: 2700.0              # 45 L/min — legacy largeWaterFlowAlarm
   burst_duration_seconds: 20
+  # All three off: warn only. Enable a condition explicitly to let it close
+  # the valve — see the burst alarm in Home Assistant before turning it on.
   enable_shutoff_long_episode: false  # a long shower must not shut off the house
   enable_shutoff_large_volume: false  # filling a pool must not shut off the house
-  enable_shutoff_burst: true
+  enable_shutoff_burst: false
 storage:
   db_path: "/var/lib/aquaguard/aquaguard.db"
   state_path: "/var/lib/aquaguard/state.json"

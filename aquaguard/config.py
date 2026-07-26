@@ -75,9 +75,11 @@ class ConsumptionConfig:
     shutoff_episode_volume_liters: float = 500.0
     burst_flow_lph: float = 2700.0  # 45 L/min, legacy 0.9 × 50 L/min
     burst_duration_seconds: int = 20
+    # All three default off: every detector warns only. Closing the valve on
+    # a house is the owner's call, so it stays opt-in per condition.
     enable_shutoff_long_episode: bool = False
     enable_shutoff_large_volume: bool = False
-    enable_shutoff_burst: bool = True
+    enable_shutoff_burst: bool = False
 
 
 @dataclass

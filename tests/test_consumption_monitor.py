@@ -322,7 +322,36 @@ class TestBurstDetection:
 
 
 class TestShutoff:
+    async def test_all_shutoffs_default_to_off(self):
+        """No condition may close the valve unless explicitly enabled."""
+        cfg = ConsumptionConfig()
+        assert cfg.enable_shutoff_burst is False
+        assert cfg.enable_shutoff_long_episode is False
+        assert cfg.enable_shutoff_large_volume is False
+
+    async def test_burst_warns_without_acting_by_default(self, consumption_config):
+        """Default config: burst raises the warning but leaves the valve alone."""
+        bus = EventBus()
+        clock = FakeClock()
+        valve = AsyncMock()
+        valve.is_open = True
+        mon = ConsumptionMonitor(
+            consumption_config, bus, valve_service=valve, time_fn=clock,
+        )
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        assert mon.warnings["burst"] is True
+        valve.close_valve.assert_not_awaited()
+
     async def test_burst_closes_valve_and_alarms(self, consumption_config):
+        consumption_config.enable_shutoff_burst = True
         bus = EventBus()
         clock = FakeClock()
         valve = AsyncMock()
@@ -408,6 +437,7 @@ class TestShutoff:
         assert alarms.trigger_alarm.await_args.args[0] == "flow_long_episode"
 
     async def test_already_closed_valve_is_not_reclosed(self, consumption_config):
+        consumption_config.enable_shutoff_burst = True
         bus = EventBus()
         clock = FakeClock()
         valve = AsyncMock()
