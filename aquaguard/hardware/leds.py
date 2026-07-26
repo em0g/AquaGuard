@@ -1,7 +1,8 @@
 """WS281x LED ring driver — 34 LEDs on GPIO 18.
 
 Layout:
-  Positions 0-29:  ring
+  Positions 0-29:  ring — pixel 0 sits at the top and the strip is wired
+                   counter-clockwise from there (verified on hardware)
     - Valve open:    solid green
     - Valve closed:  solid red
     - Opening:       spinning green animation
@@ -11,6 +12,10 @@ Layout:
   Position 31 (OFF):   solid white when valve closed, off otherwise
   Position 32 (ALARM): blinking red when alarm active, off otherwise
   Position 33 (LINK):  always solid blue
+
+Debug mode (driven from the web UI) suspends all of the above: the animation
+loop stops rendering and the caller drives individual pixels. Leaving debug
+mode marks the frame dirty so the normal state is restored on the next tick.
 """
 
 from __future__ import annotations
@@ -62,6 +67,10 @@ LED_CHANNEL = 0
 
 SPIN_INTERVAL = 0.05  # 50ms per step
 
+# Debug mode
+DEBUG_IDLE_INTERVAL = 0.2  # Loop tick while debug mode holds the strip
+DEBUG_ANIMATION_SECONDS = 3.0  # Duration of a single debug spin animation
+
 
 class LedRing:
     """WS281x LED ring with status indicators and animations."""
@@ -75,6 +84,11 @@ class LedRing:
         self._spin_pos = 0
         self._alarm_blink_on = False
         self._dirty = True  # Force initial render
+
+        # Debug mode — web UI takes over the strip
+        self._debug = False
+        self._debug_pixels: list[int] = [OFF] * led_count
+        self._debug_task: asyncio.Task[None] | None = None
 
     async def init(self) -> None:
         if PixelStrip is None:
@@ -163,11 +177,136 @@ class LedRing:
         self._alarm_active = False
         self._dirty = True
 
+    # ------------------------------------------------------------------
+    # Debug mode
+    # ------------------------------------------------------------------
+
+    @property
+    def available(self) -> bool:
+        """True when a real WS281x strip is attached (False off-device)."""
+        return self._strip is not None
+
+    @property
+    def debug_active(self) -> bool:
+        return self._debug
+
+    def debug_status(self) -> dict:
+        """Full debug state for the web UI (also used to sync new clients)."""
+        return {
+            "available": self.available,
+            "debug": self._debug,
+            "count": self._count,
+            "ring_count": RING_COUNT,
+            "animating": self._debug_task is not None and not self._debug_task.done(),
+            "positions": {
+                "on": POS_ON,
+                "off": POS_OFF,
+                "alarm": POS_ALARM,
+                "link": POS_LINK,
+            },
+            "pixels": [f"#{c:06x}" for c in self._debug_pixels],
+        }
+
+    async def enter_debug(self) -> None:
+        """Take the strip over: stop normal rendering and blank all pixels."""
+        if self._debug:
+            return
+        self._debug = True
+        self._debug_pixels = [OFF] * self._count
+        self._clear()
+        log.info("LED debug mode entered")
+
+    async def exit_debug(self) -> None:
+        """Hand the strip back to the normal state renderer."""
+        if not self._debug:
+            return
+        await self._cancel_debug_animation()
+        self._debug = False
+        self._dirty = True  # Loop re-renders the real state on the next tick
+        log.info("LED debug mode exited")
+
+    async def debug_set_pixel(self, index: int, color: int) -> None:
+        """Set a single pixel. Implicitly enters debug mode."""
+        if not 0 <= index < self._count:
+            raise ValueError(f"LED index {index} out of range (0-{self._count - 1})")
+        await self.enter_debug()
+        await self._cancel_debug_animation()
+        self._debug_pixels[index] = color
+        self._push_debug_frame()
+
+    async def debug_set_all(self, color: int) -> None:
+        """Set every pixel to one colour. Implicitly enters debug mode."""
+        await self.enter_debug()
+        await self._cancel_debug_animation()
+        self._debug_pixels = [color] * self._count
+        self._push_debug_frame()
+
+    async def debug_run_animation(self, direction: str) -> None:
+        """Run the real opening/closing spin for DEBUG_ANIMATION_SECONDS.
+
+        Uses the production `_set_ring_spin` code path so this exercises what
+        the valve animation actually renders, not a lookalike. Returns as soon
+        as the animation is scheduled; it runs as a background task.
+        """
+        if direction not in ("opening", "closing"):
+            raise ValueError(f"Unknown animation direction: {direction!r}")
+        await self.enter_debug()
+        await self._cancel_debug_animation()
+        self._debug_task = asyncio.create_task(self._debug_animate(direction))
+
+    async def _debug_animate(self, direction: str) -> None:
+        color, dim = (
+            (GREEN, GREEN_DIM) if direction == "opening" else (RED, RED_DIM)
+        )
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + DEBUG_ANIMATION_SECONDS
+        self._spin_pos = 0
+        try:
+            while loop.time() < deadline:
+                if self._strip is not None:
+                    self._set_ring_spin(color, dim)
+                    # Status LEDs keep whatever debug set them to
+                    for i in range(RING_COUNT, self._count):
+                        self._strip.setPixelColor(i, self._debug_pixels[i])
+                    self._strip.show()
+                self._spin_pos += 1
+                await asyncio.sleep(SPIN_INTERVAL)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("LED debug animation failed")
+        finally:
+            # Restore the pixels the user had set before the animation
+            if self._debug:
+                self._push_debug_frame()
+
+    async def _cancel_debug_animation(self) -> None:
+        task, self._debug_task = self._debug_task, None
+        if task is None or task.done():
+            return
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+
+    def _push_debug_frame(self) -> None:
+        if self._strip is None:
+            return
+        for i, color in enumerate(self._debug_pixels):
+            self._strip.setPixelColor(i, color)
+        self._strip.show()
+
     async def run_animation_loop(self) -> None:
         """Main LED loop — fast during animations, idle when static."""
         tick = 0
         while True:
-            if self._strip is not None:
+            if self._debug:
+                # Debug mode owns the strip — stay off it entirely, including
+                # the periodic static refresh below, which would otherwise
+                # overwrite debug pixels within a second.
+                await asyncio.sleep(DEBUG_IDLE_INTERVAL)
+            elif self._strip is not None:
                 animating = self._valve_state in ("opening", "closing")
                 blinking = self._alarm_active
 

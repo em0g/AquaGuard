@@ -109,7 +109,7 @@ class AquaGuardApp:
         # Web
         self.web_server = WebServer(
             self.event_bus, self.valve_service, self.sensor_service,
-            self.alarm_manager, self.database,
+            self.alarm_manager, self.database, self.leds,
         )
         self.web_server.set_pressure_test_callback(self._run_manual_test)
 

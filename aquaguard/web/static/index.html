@@ -95,6 +95,76 @@
     .conn-dot.connected { background: var(--ag-green); }
     .conn-dot.disconnected { background: var(--ag-red); }
     .sys-info { font-size: 0.85rem; color: var(--pico-muted-color); }
+
+    /* LED debug */
+    .led-debug {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 2rem;
+      align-items: flex-start;
+    }
+    .led-ring {
+      position: relative;
+      width: 260px;
+      height: 260px;
+      flex: 0 0 auto;
+    }
+    .led-dot {
+      position: absolute;
+      left: 50%;
+      top: 50%;
+      width: 20px;
+      height: 20px;
+      margin: -10px;
+      border-radius: 50%;
+      border: 1px solid var(--pico-muted-border-color);
+      background: #000;
+      cursor: pointer;
+      padding: 0;
+    }
+    .led-dot:hover { outline: 2px solid var(--ag-blue); }
+    .led-ring-label {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 0.8rem;
+      color: var(--pico-muted-color);
+      pointer-events: none;
+      text-align: center;
+    }
+    .led-controls { flex: 1 1 220px; min-width: 220px; }
+    .led-controls button { margin-bottom: 0.5rem; }
+    .led-status-row {
+      display: flex;
+      gap: 0.75rem;
+      margin: 0.5rem 0 1rem;
+      flex-wrap: wrap;
+    }
+    .led-status-item { text-align: center; font-size: 0.7rem; color: var(--pico-muted-color); }
+    .led-status-item .led-dot {
+      position: static;
+      display: block;
+      margin: 0 auto 0.25rem;
+      width: 28px;
+      height: 28px;
+      border-radius: 4px;
+    }
+    .led-color-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 1rem;
+    }
+    .led-color-row input[type="color"] {
+      width: 60px;
+      height: 40px;
+      padding: 2px;
+      margin: 0;
+    }
+    .led-hint { font-size: 0.8rem; color: var(--pico-muted-color); }
+    .led-warn { color: var(--ag-yellow); font-size: 0.85rem; }
   </style>
 </head>
 <body>
@@ -164,6 +234,32 @@
           <span id="lastUpdate">--</span>
         </div>
       </div>
+
+      <!-- LED debug -->
+      <details class="card" style="grid-column: 1 / -1;">
+        <summary><strong>LED-debug</strong></summary>
+        <p id="ledUnavailable" class="led-warn" style="display:none;">
+          Ingen WS281x-strip tillg&auml;nglig (k&ouml;rs inte p&aring; Pi) &mdash; knapparna g&ouml;r ingenting.
+        </p>
+        <div class="led-debug">
+          <div class="led-ring" id="ledRing">
+            <div class="led-ring-label">Ring<br>0&ndash;29</div>
+          </div>
+          <div class="led-controls">
+            <div class="led-color-row">
+              <input type="color" id="ledColor" value="#66ff33">
+              <span class="led-hint">Klicka p&aring; en LED f&ouml;r att t&auml;nda den i vald f&auml;rg, klicka igen f&ouml;r att sl&auml;cka.</span>
+            </div>
+            <div class="led-status-row" id="ledStatusRow"></div>
+            <button class="outline" onclick="ledSetAll(true)">Alla p&aring;</button>
+            <button class="outline" onclick="ledSetAll(false)">Alla av</button>
+            <button class="outline" id="ledAnimOpen" onclick="ledAnimation('opening')">&Ouml;ppna-anim 3 s</button>
+            <button class="outline" id="ledAnimClose" onclick="ledAnimation('closing')">St&auml;ng-anim 3 s</button>
+            <button class="outline" id="ledExitBtn" onclick="ledExitDebug()">Avsluta debug</button>
+            <p class="led-hint" id="ledModeHint">Debug-l&auml;get startar automatiskt vid f&ouml;rsta klicket och avslutas n&auml;r sista fliken st&auml;ngs.</p>
+          </div>
+        </div>
+      </details>
     </div>
   </main>
 
@@ -203,6 +299,10 @@
           updateValve(msg.valve);
           updateSensors(msg);
           updateAlarm(msg.alarm);
+          if (msg.leds) updateLeds(msg.leds);
+          break;
+        case 'leds':
+          updateLeds(msg);
           break;
         case 'sensor_update':
           updateSensors(msg);
@@ -326,6 +426,101 @@
     function resetAlarm() {
       if (!ws || ws.readyState !== WebSocket.OPEN) return;
       ws.send(JSON.stringify({ command: 'alarm_reset' }));
+    }
+
+    /* ---------------- LED debug ---------------- */
+
+    const STATUS_LABELS = { on: 'ON', off: 'OFF', alarm: 'ALARM', link: 'LINK' };
+    let ledState = null;
+
+    function send(msg) {
+      if (!ws || ws.readyState !== WebSocket.OPEN) return;
+      ws.send(JSON.stringify(msg));
+    }
+
+    function buildLedDots(state) {
+      const ring = document.getElementById('ledRing');
+      const statusRow = document.getElementById('ledStatusRow');
+      ring.querySelectorAll('.led-dot').forEach(d => d.remove());
+      statusRow.innerHTML = '';
+
+      // Ring LEDs laid out as the physical circle: index 0 at the top and
+      // counter-clockwise from there, which is how the strip is actually wired.
+      const step = 360 / state.ring_count;
+      for (let i = 0; i < state.ring_count; i++) {
+        const angle = -i * step;
+        const dot = document.createElement('button');
+        dot.className = 'led-dot';
+        dot.dataset.index = i;
+        dot.title = `LED ${i}`;
+        dot.style.transform =
+          `rotate(${angle}deg) translate(0, -110px) rotate(${-angle}deg)`;
+        dot.onclick = () => toggleLed(i);
+        ring.appendChild(dot);
+      }
+
+      // Status LEDs, labelled by their role
+      for (const [key, index] of Object.entries(state.positions)) {
+        const item = document.createElement('div');
+        item.className = 'led-status-item';
+        const dot = document.createElement('button');
+        dot.className = 'led-dot';
+        dot.dataset.index = index;
+        dot.title = `LED ${index}`;
+        dot.onclick = () => toggleLed(index);
+        item.appendChild(dot);
+        item.appendChild(
+          document.createTextNode(`${STATUS_LABELS[key] || key} (${index})`)
+        );
+        statusRow.appendChild(item);
+      }
+    }
+
+    function updateLeds(state) {
+      const known = ledState;
+      ledState = state;
+
+      if (!known || known.count !== state.count || known.ring_count !== state.ring_count) {
+        buildLedDots(state);
+      }
+
+      document.getElementById('ledUnavailable').style.display =
+        state.available ? 'none' : '';
+
+      document.querySelectorAll('.led-dot').forEach(dot => {
+        dot.style.background = state.pixels[dot.dataset.index] || '#000000';
+      });
+
+      document.getElementById('ledExitBtn').disabled = !state.debug;
+      document.getElementById('ledModeHint').textContent = state.debug
+        ? 'Debug-läget är aktivt — ventil- och larmvisning är pausad.'
+        : 'Debug-läget startar automatiskt vid första klicket och avslutas när sista fliken stängs.';
+    }
+
+    function toggleLed(index) {
+      if (!ledState) return;
+      const current = (ledState.pixels[index] || '#000000').toLowerCase();
+      const color = current === '#000000'
+        ? document.getElementById('ledColor').value
+        : '#000000';
+      send({ command: 'led_set', index: index, color: color });
+    }
+
+    function ledSetAll(on) {
+      const color = on ? document.getElementById('ledColor').value : '#000000';
+      send({ command: 'led_set_all', color: color });
+    }
+
+    function ledAnimation(direction) {
+      send({ command: 'led_animation', direction: direction });
+      // Server-side animation runs 3 s and sends no completion event
+      const buttons = ['ledAnimOpen', 'ledAnimClose'].map(id => document.getElementById(id));
+      buttons.forEach(b => b.disabled = true);
+      setTimeout(() => buttons.forEach(b => b.disabled = false), 3000);
+    }
+
+    function ledExitDebug() {
+      send({ command: 'led_debug', enabled: false });
     }
 
     connect();

@@ -8,11 +8,12 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
 from aquaguard.event_bus import EventBus
+from aquaguard.hardware.leds import LedRing
 from aquaguard.services.alarm_manager import AlarmManager
 from aquaguard.services.sensor_service import SensorService
 from aquaguard.services.valve_service import ValveService
@@ -21,6 +22,20 @@ from aquaguard.storage.database import Database
 log = logging.getLogger(__name__)
 
 STATIC_DIR = Path(__file__).parent / "static"
+
+
+def parse_color(value: Any) -> int:
+    """Parse '#rrggbb' (or 'rrggbb') into the packed int rpi_ws281x expects."""
+    if isinstance(value, int):
+        color = value
+    else:
+        text = str(value).strip().lstrip("#")
+        if len(text) != 6:
+            raise ValueError(f"Invalid colour: {value!r}")
+        color = int(text, 16)
+    if not 0 <= color <= 0xFFFFFF:
+        raise ValueError(f"Colour out of range: {value!r}")
+    return color
 
 
 class WebServer:
@@ -33,12 +48,14 @@ class WebServer:
         sensors: SensorService,
         alarms: AlarmManager,
         database: Database,
+        leds: LedRing,
     ):
         self._bus = event_bus
         self._valve = valve
         self._sensors = sensors
         self._alarms = alarms
         self._db = database
+        self._leds = leds
         self._clients: set[WebSocket] = set()
         self._pressure_test_callback: callable | None = None
 
@@ -109,6 +126,52 @@ class WebServer:
             tests = await self._db.get_pressure_tests(limit=20)
             return {"tests": tests}
 
+        @app.get("/api/leds")
+        async def led_status():
+            return self._leds.debug_status()
+
+        @app.post("/api/leds/debug")
+        async def led_debug(payload: dict):
+            if payload.get("enabled"):
+                await self._leds.enter_debug()
+            else:
+                await self._leds.exit_debug()
+            await self._broadcast_leds()
+            return self._leds.debug_status()
+
+        @app.post("/api/leds/pixel")
+        async def led_pixel(payload: dict):
+            try:
+                index = int(payload["index"])
+                color = parse_color(payload["color"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            try:
+                await self._leds.debug_set_pixel(index, color)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await self._broadcast_leds()
+            return self._leds.debug_status()
+
+        @app.post("/api/leds/all")
+        async def led_all(payload: dict):
+            try:
+                color = parse_color(payload["color"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await self._leds.debug_set_all(color)
+            await self._broadcast_leds()
+            return self._leds.debug_status()
+
+        @app.post("/api/leds/animation")
+        async def led_animation(payload: dict):
+            try:
+                await self._leds.debug_run_animation(str(payload.get("direction")))
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc)) from exc
+            await self._broadcast_leds()
+            return self._leds.debug_status()
+
         @app.websocket("/ws")
         async def websocket_endpoint(ws: WebSocket):
             await ws.accept()
@@ -128,6 +191,7 @@ class WebServer:
                         "type": self._alarms.state.alarm_type,
                         "message": self._alarms.state.message,
                     },
+                    "leds": self._leds.debug_status(),
                 })
                 # Keep alive — read incoming messages (commands)
                 while True:
@@ -138,6 +202,10 @@ class WebServer:
             finally:
                 self._clients.discard(ws)
                 log.debug("WebSocket client disconnected (%d remaining)", len(self._clients))
+                # Nobody is watching — don't leave the ring stuck in debug
+                # colours where it can no longer show valve/alarm state.
+                if not self._clients and self._leds.debug_active:
+                    await self._leds.exit_debug()
 
     async def _handle_ws_message(self, data: str) -> None:
         try:
@@ -152,6 +220,23 @@ class WebServer:
                     asyncio.ensure_future(self._pressure_test_callback())
             elif cmd == "alarm_reset":
                 await self._alarms.clear_alarm()
+            elif cmd == "led_debug":
+                if msg.get("enabled"):
+                    await self._leds.enter_debug()
+                else:
+                    await self._leds.exit_debug()
+                await self._broadcast_leds()
+            elif cmd == "led_set":
+                await self._leds.debug_set_pixel(
+                    int(msg["index"]), parse_color(msg["color"])
+                )
+                await self._broadcast_leds()
+            elif cmd == "led_set_all":
+                await self._leds.debug_set_all(parse_color(msg["color"]))
+                await self._broadcast_leds()
+            elif cmd == "led_animation":
+                await self._leds.debug_run_animation(str(msg["direction"]))
+                await self._broadcast_leds()
         except Exception:
             log.exception("Error handling WebSocket message")
 
@@ -164,6 +249,10 @@ class WebServer:
                 dead.append(ws)
         for ws in dead:
             self._clients.discard(ws)
+
+    async def _broadcast_leds(self) -> None:
+        """Push full LED debug state so every open tab stays in sync."""
+        await self._broadcast({"type": "leds", **self._leds.debug_status()})
 
     async def _broadcast_sensors(
         self, pressure: float, temperature: float, flow_rate: float
