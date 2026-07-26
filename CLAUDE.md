@@ -29,6 +29,11 @@ ssh pi@<pi-host> 'sudo journalctl -u aquaguard -f'
 sudo cp /etc/aquaguard/config.yaml /etc/aquaguard/config.yaml.bak
 ```
 
+Host-level settings that the app and `install.sh` do *not* manage (WiFi powersave off,
+persistent journal, and what is deliberately left stock — audio, clocks, governor) are
+documented in README under "Host system settings", with the drop-ins in `deploy/system/`.
+Check there before blaming the code for a hardware or connectivity symptom.
+
 Entry point is `python -m aquaguard` (see `aquaguard/__main__.py`). The systemd unit (`deploy/aquaguard.service`) runs as **root** — required for rpi-ws281x DMA/PWM and GPIO. `ProtectSystem=strict` with `ReadWritePaths=/var/lib/aquaguard`, so the app cannot write outside the data dir.
 
 ## Architecture
