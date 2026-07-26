@@ -12,7 +12,7 @@ hardware:
   i2c_bus: 1
   valve_address: 0x60
   pressure_address: 0x48
-  temp_device_id: "28-0301a2791e31"
+  temp_device_id: ""        # empty = auto-detect; set to a 28-xxxx id to pin one
   motor_poweroff_delay: 8
   led_count: 34
   buzzer_pin: 23

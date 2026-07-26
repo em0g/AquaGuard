@@ -35,7 +35,7 @@ class HardwareConfig:
     i2c_bus: int = 1
     valve_address: int = 0x60
     pressure_address: int = 0x48
-    temp_device_id: str = "28-0301a2791e31"
+    temp_device_id: str = ""  # empty = auto-detect the first 28-* 1-wire device
     motor_poweroff_delay: int = 8
     led_count: int = 34
     buzzer_pin: int = 23

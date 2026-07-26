@@ -4,6 +4,10 @@ Reference: pipeTemp.js
   - Read /sys/bus/w1/devices/{id}/w1_slave
   - Parse t=15750 → 15.75°C
   - Return 99.0 if sensor is missing (legacy convention)
+
+The device id is a per-chip serial, so it is not committed to the repo. Leave
+`hardware.temp_device_id` empty and the first 28-* device on the bus is used,
+which is the right answer whenever there is only one sensor.
 """
 
 from __future__ import annotations
@@ -22,10 +26,34 @@ _FALLBACK_TEMP = 99.0
 class TemperatureSensor:
     """DS18B20 1-wire temperature sensor."""
 
-    def __init__(self, device_id: str = "28-0301a2791e31"):
-        self._device_id = device_id
-        self._path = _W1_BASE / device_id / "w1_slave"
-        self.available = self._path.exists()
+    def __init__(self, device_id: str = ""):
+        self._device_id = device_id or self._discover()
+        self._path = _W1_BASE / self._device_id / "w1_slave"
+        self.available = bool(self._device_id) and self._path.exists()
+        if not self.available:
+            log.warning(
+                "Temperature sensor unavailable (device_id=%r) — "
+                "readings will report %.1f",
+                self._device_id, _FALLBACK_TEMP,
+            )
+
+    @staticmethod
+    def _discover() -> str:
+        """Return the first DS18B20 on the 1-wire bus, or '' if none."""
+        try:
+            found = sorted(p.name for p in _W1_BASE.glob("28-*"))
+        except OSError:
+            return ""
+        if not found:
+            return ""
+        if len(found) > 1:
+            log.warning(
+                "Multiple 1-wire sensors found (%s) — using %s. "
+                "Set hardware.temp_device_id to pick a specific one.",
+                ", ".join(found), found[0],
+            )
+        log.info("Auto-detected 1-wire temperature sensor: %s", found[0])
+        return found[0]
 
     async def read_temperature(self) -> float:
         """Read temperature in °C. Returns 99.0 if sensor is unavailable."""
