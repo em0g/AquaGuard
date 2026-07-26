@@ -157,9 +157,11 @@ class FlowSensor:
     def set_measurement_callback(self, callback) -> None:
         """Register async callback invoked after each measurement cycle.
 
-        Signature: callback(flow_lph, state, episode_volume, episode_duration)
-        where flow_lph is the EMA-smoothed flow rate (unfloored — may be sub-5
-        for low-flow leak detection).
+        Signature: callback(flow_lph, raw_flow_lph, state, episode_volume,
+        episode_duration) where flow_lph is the EMA-smoothed rate (unfloored —
+        may be sub-5 for low-flow leak detection) and raw_flow_lph is this
+        cycle's unsmoothed reading. Use the smoothed value for slow conditions
+        and the raw one where latency matters, e.g. burst detection.
         """
         self._measurement_callback = callback
 
@@ -450,6 +452,7 @@ class FlowSensor:
                 try:
                     await self._measurement_callback(
                         flow_lph=self._ema_flow,
+                        raw_flow_lph=flow_lph,
                         state=self._state,
                         episode_volume=self._episode_volume,
                         episode_duration=self._episode_duration,

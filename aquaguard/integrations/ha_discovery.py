@@ -187,6 +187,7 @@ class HADiscovery:
             ("consumption_long_episode", "Long Flow Episode", "problem"),
             ("consumption_large_volume", "Large Episode Volume", "problem"),
             ("consumption_drip", "Drip Detected", "problem"),
+            ("consumption_burst", "Burst Flow", "problem"),
         ):
             await self._mqtt.publish(
                 self._discovery_topic("binary_sensor", entity),
@@ -307,6 +308,7 @@ class HADiscovery:
             ("long_episode", "consumption_long_episode"),
             ("large_volume", "consumption_large_volume"),
             ("drip", "consumption_drip"),
+            ("burst", "consumption_burst"),
         ):
             await self._mqtt.publish(
                 self._base_topic(f"binary_sensor/{entity}", "state"),

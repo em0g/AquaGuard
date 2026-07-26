@@ -34,6 +34,14 @@ consumption:
   drip_min_flow: 5.0             # drip band lower bound (L/h)
   drip_max_flow: 25.0            # drip band upper bound (L/h, below episode start)
   drip_duration_minutes: 120     # sustained drip-band flow before warning
+  # Shutoff tier — closes the valve and latches an alarm.
+  shutoff_episode_minutes: 120        # legacy waterOff was 60, but that is our warn level
+  shutoff_episode_volume_liters: 500.0
+  burst_flow_lph: 2700.0              # 45 L/min — legacy largeWaterFlowAlarm
+  burst_duration_seconds: 20
+  enable_shutoff_long_episode: false  # a long shower must not shut off the house
+  enable_shutoff_large_volume: false  # filling a pool must not shut off the house
+  enable_shutoff_burst: true
 storage:
   db_path: "/var/lib/aquaguard/aquaguard.db"
   state_path: "/var/lib/aquaguard/state.json"

@@ -61,11 +61,23 @@ class PressureTestConfig:
 
 @dataclass
 class ConsumptionConfig:
+    # Warning tier — emits events for Home Assistant, takes no action.
     long_episode_minutes: int = 60
     episode_volume_liters: float = 300.0
     drip_min_flow: float = 5.0
     drip_max_flow: float = 25.0
     drip_duration_minutes: int = 120
+
+    # Shutoff tier — closes the valve and latches an alarm. Ported from the
+    # legacy flow.ini waterOff levels; the enable_* flags are the inverse of
+    # its ignoreWaterOff flags.
+    shutoff_episode_minutes: int = 120
+    shutoff_episode_volume_liters: float = 500.0
+    burst_flow_lph: float = 2700.0  # 45 L/min, legacy 0.9 × 50 L/min
+    burst_duration_seconds: int = 20
+    enable_shutoff_long_episode: bool = False
+    enable_shutoff_large_volume: bool = False
+    enable_shutoff_burst: bool = True
 
 
 @dataclass

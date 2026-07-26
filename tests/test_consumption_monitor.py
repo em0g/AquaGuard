@@ -1,6 +1,8 @@
-"""Tests for ConsumptionMonitor — long episode, large volume, drip detection."""
+"""Tests for ConsumptionMonitor — long episode, large volume, drip, burst."""
 
 from __future__ import annotations
+
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -59,9 +61,13 @@ def monitor_and_events(consumption_config):
     async def on_drip(**kw):
         received.append(("consumption_warning_drip", kw))
 
+    async def on_burst(**kw):
+        received.append(("consumption_warning_burst", kw))
+
     bus.subscribe("consumption_warning_long_episode", on_long)
     bus.subscribe("consumption_warning_large_volume", on_volume)
     bus.subscribe("consumption_warning_drip", on_drip)
+    bus.subscribe("consumption_warning_burst", on_burst)
 
     clock = FakeClock()
     mon = ConsumptionMonitor(consumption_config, bus, time_fn=clock)
@@ -241,11 +247,196 @@ class TestDripDetection:
         assert sum(1 for e in events if e[0] == "consumption_warning_drip") == 1
 
 
+class TestBurstDetection:
+    async def test_warns_after_sustained_high_flow(self, monitor_and_events):
+        mon, events, clock = monitor_and_events
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        assert not any(e[0] == "consumption_warning_burst" for e in events)
+        # 19 s — still below the 20 s threshold
+        clock.advance(19)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=16.0, episode_duration=20.0,
+        )
+        assert not any(e[0] == "consumption_warning_burst" for e in events)
+        clock.advance(2)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        burst = [e for e in events if e[0] == "consumption_warning_burst"]
+        assert len(burst) == 1
+        assert burst[0][1]["flow_lph"] == 3000.0
+
+    async def test_brief_spike_does_not_warn(self, monitor_and_events):
+        """A single high reading must not trip the burst alarm."""
+        mon, events, clock = monitor_and_events
+        await mon.on_measurement(
+            flow_lph=5000.0, state=FlowState.FLOW,
+            episode_volume=2.0, episode_duration=1.0,
+        )
+        clock.advance(5)
+        # Flow returns to normal — streak resets
+        await mon.on_measurement(
+            flow_lph=200.0, state=FlowState.FLOW,
+            episode_volume=3.0, episode_duration=6.0,
+        )
+        clock.advance(60)
+        await mon.on_measurement(
+            flow_lph=200.0, state=FlowState.FLOW,
+            episode_volume=8.0, episode_duration=66.0,
+        )
+        assert not any(e[0] == "consumption_warning_burst" for e in events)
+
+    async def test_uses_raw_flow_not_smoothed(self, monitor_and_events):
+        """Burst must key off the unsmoothed reading, so EMA lag can't delay it."""
+        mon, events, clock = monitor_and_events
+        # Smoothed value still ramping up (below threshold), raw already high
+        await mon.on_measurement(
+            flow_lph=900.0, raw_flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=1800.0, raw_flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        assert sum(1 for e in events if e[0] == "consumption_warning_burst") == 1
+
+    async def test_detected_before_episode_starts(self, monitor_and_events):
+        """Burst is checked in IDLE too — episode debounce must not delay it."""
+        mon, events, clock = monitor_and_events
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.IDLE,
+            episode_volume=0.0, episode_duration=0.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.IDLE,
+            episode_volume=0.0, episode_duration=0.0,
+        )
+        assert sum(1 for e in events if e[0] == "consumption_warning_burst") == 1
+
+
+class TestShutoff:
+    async def test_burst_closes_valve_and_alarms(self, consumption_config):
+        bus = EventBus()
+        clock = FakeClock()
+        valve = AsyncMock()
+        valve.is_open = True
+        alarms = AsyncMock()
+        mon = ConsumptionMonitor(
+            consumption_config, bus,
+            valve_service=valve, alarm_manager=alarms, time_fn=clock,
+        )
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        valve.close_valve.assert_awaited_once()
+        alarms.trigger_alarm.assert_awaited_once()
+        assert alarms.trigger_alarm.await_args.args[0] == "flow_burst"
+
+    async def test_no_shutoff_when_disabled(self, consumption_config):
+        consumption_config.enable_shutoff_burst = False
+        bus = EventBus()
+        clock = FakeClock()
+        valve = AsyncMock()
+        valve.is_open = True
+        mon = ConsumptionMonitor(
+            consumption_config, bus, valve_service=valve, time_fn=clock,
+        )
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        valve.close_valve.assert_not_awaited()
+
+    async def test_long_episode_warns_but_does_not_shut_off_by_default(
+        self, consumption_config
+    ):
+        """Default config must never close the valve on a long shower."""
+        bus = EventBus()
+        valve = AsyncMock()
+        valve.is_open = True
+        mon = ConsumptionMonitor(
+            consumption_config, bus, valve_service=valve, time_fn=FakeClock(),
+        )
+        # Well past both the warn (60 s) and shutoff (120 s) thresholds
+        await mon.on_measurement(
+            flow_lph=100.0, state=FlowState.FLOW,
+            episode_volume=10.0, episode_duration=9999.0,
+        )
+        assert mon.warnings["long_episode"] is True
+        valve.close_valve.assert_not_awaited()
+
+    async def test_long_episode_shuts_off_when_enabled(self, consumption_config):
+        consumption_config.enable_shutoff_long_episode = True
+        consumption_config.shutoff_episode_minutes = 2  # 120 s
+        bus = EventBus()
+        valve = AsyncMock()
+        valve.is_open = True
+        alarms = AsyncMock()
+        mon = ConsumptionMonitor(
+            consumption_config, bus,
+            valve_service=valve, alarm_manager=alarms, time_fn=FakeClock(),
+        )
+        # 90 s — past the warning (60 s), short of the shutoff (120 s)
+        await mon.on_measurement(
+            flow_lph=100.0, state=FlowState.FLOW,
+            episode_volume=10.0, episode_duration=90.0,
+        )
+        valve.close_valve.assert_not_awaited()
+        await mon.on_measurement(
+            flow_lph=100.0, state=FlowState.FLOW,
+            episode_volume=10.0, episode_duration=121.0,
+        )
+        valve.close_valve.assert_awaited_once()
+        assert alarms.trigger_alarm.await_args.args[0] == "flow_long_episode"
+
+    async def test_already_closed_valve_is_not_reclosed(self, consumption_config):
+        bus = EventBus()
+        clock = FakeClock()
+        valve = AsyncMock()
+        valve.is_open = False
+        alarms = AsyncMock()
+        mon = ConsumptionMonitor(
+            consumption_config, bus,
+            valve_service=valve, alarm_manager=alarms, time_fn=clock,
+        )
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=1.0, episode_duration=1.0,
+        )
+        clock.advance(21)
+        await mon.on_measurement(
+            flow_lph=3000.0, state=FlowState.FLOW,
+            episode_volume=18.0, episode_duration=22.0,
+        )
+        valve.close_valve.assert_not_awaited()
+        # The alarm must still be raised
+        alarms.trigger_alarm.assert_awaited_once()
+
+
 class TestWarningsProperty:
     async def test_reflects_current_state(self, monitor_and_events):
         mon, _events, clock = monitor_and_events
         assert mon.warnings == {
-            "long_episode": False, "large_volume": False, "drip": False,
+            "long_episode": False, "large_volume": False,
+            "drip": False, "burst": False,
         }
         # Trigger long episode
         await mon.on_measurement(

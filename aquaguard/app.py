@@ -95,6 +95,8 @@ class AquaGuardApp:
         )
         self.consumption_monitor = ConsumptionMonitor(
             config.consumption, self.event_bus,
+            valve_service=self.valve_service,
+            alarm_manager=self.alarm_manager,
         )
 
         # Integrations

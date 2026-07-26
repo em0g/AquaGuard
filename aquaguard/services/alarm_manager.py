@@ -5,6 +5,9 @@ Alarm types:
   - temp_low: temperature below frost threshold
   - leak_detected: pressure test detected leak
   - external: external alarm GPIO triggered
+  - flow_burst: sustained very high flow, valve closed by ConsumptionMonitor
+  - flow_long_episode: flow ran past the shutoff duration (opt-in)
+  - flow_large_volume: episode passed the shutoff volume (opt-in)
 """
 
 from __future__ import annotations
