@@ -62,3 +62,24 @@ class TestReading:
     async def test_negative_temperature(self, w1_base):
         _make_device(w1_base, "28-000000000001", millidegrees=-4125)
         assert await TemperatureSensor().read_temperature() == pytest.approx(-4.125)
+
+    async def test_failed_crc_returns_fallback(self, w1_base):
+        """A 'NO' CRC line means the t= value is garbage — never trust it."""
+        _make_device(w1_base, "28-000000000001")
+        sensor = TemperatureSensor()
+        (w1_base / "28-000000000001" / "w1_slave").write_text(
+            "aa bb cc : crc=cc NO\naa bb cc t=1250\n"
+        )
+        assert await sensor.read_temperature() == 99.0
+
+    async def test_power_on_reset_value_discarded(self, w1_base):
+        """85.000 °C is the DS18B20 power-on scratchpad default, not a
+        reading — on a water pipe it can only mean the sensor never
+        converted."""
+        _make_device(w1_base, "28-000000000001", millidegrees=85000)
+        assert await TemperatureSensor().read_temperature() == 99.0
+
+    async def test_near_85_is_a_real_reading(self, w1_base):
+        """Only the exact power-on value is discarded."""
+        _make_device(w1_base, "28-000000000001", millidegrees=84937)
+        assert await TemperatureSensor().read_temperature() == pytest.approx(84.937)

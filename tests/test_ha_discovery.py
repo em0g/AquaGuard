@@ -71,3 +71,30 @@ class TestEventDrivenState:
         await event_bus.emit("valve_state_changed", state="open")
 
         mock_mqtt.publish.assert_not_awaited()
+
+
+class TestTemperatureSentinel:
+    async def test_fallback_temp_published_as_unknown(
+        self, ha_discovery, mock_mqtt
+    ):
+        """99.0 means 'no reading' — HA must show unknown, not 99 °C."""
+        ha_discovery._sensors.readings.temperature = 99.0
+
+        await ha_discovery.publish_state()
+
+        temp_publishes = [
+            c for c in mock_mqtt.publish.await_args_list
+            if c.args[0] == "aquaguard/test01/sensor/temperature/state"
+        ]
+        assert temp_publishes[0].args[1] == "None"
+
+    async def test_real_temperature_published_numeric(
+        self, ha_discovery, mock_mqtt
+    ):
+        await ha_discovery.publish_state()
+
+        temp_publishes = [
+            c for c in mock_mqtt.publish.await_args_list
+            if c.args[0] == "aquaguard/test01/sensor/temperature/state"
+        ]
+        assert temp_publishes[0].args[1] == "21.4"

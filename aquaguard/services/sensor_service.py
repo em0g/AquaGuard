@@ -8,7 +8,7 @@ from dataclasses import dataclass
 
 from aquaguard.event_bus import EventBus
 from aquaguard.hardware.pressure import PressureSensor
-from aquaguard.hardware.temperature import TemperatureSensor
+from aquaguard.hardware.temperature import FALLBACK_TEMP, TemperatureSensor
 
 log = logging.getLogger(__name__)
 
@@ -16,7 +16,7 @@ log = logging.getLogger(__name__)
 @dataclass
 class SensorReadings:
     pressure: float = 0.0
-    temperature: float = 99.0
+    temperature: float = FALLBACK_TEMP
     flow_rate: float = 0.0
 
 

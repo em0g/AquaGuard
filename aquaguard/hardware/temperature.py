@@ -20,7 +20,13 @@ from pathlib import Path
 log = logging.getLogger(__name__)
 
 _W1_BASE = Path("/sys/bus/w1/devices")
-_FALLBACK_TEMP = 99.0
+# Legacy sentinel for "no reading" (pipeTemp.js convention). Outward-facing
+# layers translate it: HA publishes the sensor as unknown instead of 99 °C.
+FALLBACK_TEMP = 99.0
+# DS18B20 power-on-reset value: the scratchpad reads 85 °C until the first
+# conversion completes, so an 85.000 reading is indistinguishable from a
+# sensor that never converted — treat it as invalid.
+_POWER_ON_RESET_MILLIDEGREES = 85000
 
 
 class TemperatureSensor:
@@ -34,7 +40,7 @@ class TemperatureSensor:
             log.warning(
                 "Temperature sensor unavailable (device_id=%r) — "
                 "readings will report %.1f",
-                self._device_id, _FALLBACK_TEMP,
+                self._device_id, FALLBACK_TEMP,
             )
 
     @staticmethod
@@ -58,7 +64,7 @@ class TemperatureSensor:
     async def read_temperature(self) -> float:
         """Read temperature in °C. Returns 99.0 if sensor is unavailable."""
         if not self.available:
-            return _FALLBACK_TEMP
+            return FALLBACK_TEMP
         try:
             loop = asyncio.get_running_loop()
             text = await loop.run_in_executor(
@@ -67,13 +73,28 @@ class TemperatureSensor:
             return self._parse(text)
         except Exception:
             log.exception("Failed to read temperature sensor")
-            return _FALLBACK_TEMP
+            return FALLBACK_TEMP
 
     @staticmethod
     def _parse(text: str) -> float:
-        """Parse w1_slave output for temperature value."""
-        for line in text.splitlines():
+        """Parse w1_slave output for temperature value.
+
+        The first line ends in "YES" when the on-sensor CRC matched; on "NO"
+        the t= value is garbage and must not be trusted.
+        """
+        lines = text.splitlines()
+        if not lines or not lines[0].strip().endswith("YES"):
+            log.warning("Temperature read failed CRC check")
+            return FALLBACK_TEMP
+        for line in lines:
             if "t=" in line:
                 _, _, t_str = line.partition("t=")
-                return int(t_str) / 1000.0
-        return _FALLBACK_TEMP
+                millidegrees = int(t_str)
+                if millidegrees == _POWER_ON_RESET_MILLIDEGREES:
+                    log.warning(
+                        "Temperature read 85.0 °C (power-on-reset value) — "
+                        "discarding"
+                    )
+                    return FALLBACK_TEMP
+                return millidegrees / 1000.0
+        return FALLBACK_TEMP

@@ -21,6 +21,7 @@ import logging
 
 from aquaguard.config import DeviceConfig
 from aquaguard.event_bus import EventBus
+from aquaguard.hardware.temperature import FALLBACK_TEMP
 from aquaguard.integrations.mqtt_client import MqttClient
 from aquaguard.services.alarm_manager import AlarmManager
 from aquaguard.services.consumption_monitor import ConsumptionMonitor
@@ -311,9 +312,11 @@ class HADiscovery:
             self._base_topic("sensor/pressure", "state"),
             f"{r.pressure:.3f}",
         )
+        # 99.0 is the "no reading" sentinel — publish HA's unknown-state
+        # payload instead of presenting it as a real 99 °C.
         await self._mqtt.publish(
             self._base_topic("sensor/temperature", "state"),
-            f"{r.temperature:.1f}",
+            "None" if r.temperature == FALLBACK_TEMP else f"{r.temperature:.1f}",
         )
         await self._mqtt.publish(
             self._base_topic("sensor/flow_rate", "state"),

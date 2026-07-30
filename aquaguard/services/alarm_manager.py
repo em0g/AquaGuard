@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from aquaguard.config import AlarmsConfig
 from aquaguard.event_bus import EventBus
 from aquaguard.hardware.buzzer import Buzzer
+from aquaguard.hardware.temperature import FALLBACK_TEMP
 from aquaguard.hardware.gpio_alarm import GpioAlarm
 from aquaguard.storage.state import StateStore
 
@@ -103,8 +104,11 @@ class AlarmManager:
         self, pressure: float, temperature: float, flow_rate: float
     ) -> None:
         """Check sensor values against alarm thresholds."""
-        # Temperature alarm
-        if temperature < self._config.low_temp_threshold and temperature != 99.0:
+        # Temperature alarm (FALLBACK_TEMP means "no reading", not warm)
+        if (
+            temperature < self._config.low_temp_threshold
+            and temperature != FALLBACK_TEMP
+        ):
             if not self.state.temp_alarm:
                 await self.trigger_alarm(
                     "temp_low",
