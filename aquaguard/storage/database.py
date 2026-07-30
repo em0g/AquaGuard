@@ -42,6 +42,12 @@ CREATE TABLE IF NOT EXISTS pressure_test (
 """
 
 _MAX_EVENTS = 75
+# Retention: episodes older than this are pruned on insert.
+_EPISODE_RETENTION_DAYS = 365
+# Full 3600-sample stage-2 curves are ~50 kB per test; keep them for the
+# most recent tests only. Summary rows (result, pressures) are tiny and
+# kept forever.
+_PRESSURE_TEST_CURVES_KEPT = 20
 
 
 class Database:
@@ -103,6 +109,13 @@ class Database:
                 json.dumps(values_stage2) if values_stage2 else None,
             ),
         )
+        # Drop raw curves outside the retention window; keep the summary rows.
+        await self._execute(
+            """UPDATE pressure_test SET values_stage1 = NULL, values_stage2 = NULL
+               WHERE id NOT IN
+               (SELECT id FROM pressure_test ORDER BY id DESC LIMIT ?)""",
+            (_PRESSURE_TEST_CURVES_KEPT,),
+        )
 
     async def get_pressure_tests(self, limit: int = 20) -> list[dict[str, Any]]:
         rows = await self._execute(
@@ -132,6 +145,24 @@ class Database:
             "INSERT INTO episode (volume, duration, flowmeter) VALUES (?, ?, ?)",
             (volume, duration, flowmeter),
         )
+        await self._execute(
+            "DELETE FROM episode WHERE timestamp < datetime('now', ?)",
+            (f"-{_EPISODE_RETENTION_DAYS} days",),
+        )
+
+    async def get_last_scheduled_test_date(self) -> str | None:
+        """ISO date (YYYY-MM-DD, UTC) of the most recent scheduled test.
+
+        Seeds the scheduler's interval tracking on first run after upgrade,
+        so the every-other-Sunday cadence carries over without a state file.
+        """
+        rows = await self._execute(
+            "SELECT timestamp FROM pressure_test WHERE type = 'scheduled' "
+            "ORDER BY id DESC LIMIT 1"
+        )
+        if not rows:
+            return None
+        return str(rows[0]["timestamp"])[:10]
 
     async def get_episodes(self, limit: int = 50) -> list[dict[str, Any]]:
         rows = await self._execute(

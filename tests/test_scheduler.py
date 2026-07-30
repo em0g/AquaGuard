@@ -1,7 +1,8 @@
-"""Tests for the scheduler — focus on valve state restoration across retries."""
+"""Tests for the scheduler — valve restoration, failure reporting, interval."""
 
 from __future__ import annotations
 
+from datetime import date, datetime, timezone
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -10,6 +11,7 @@ from aquaguard.config import PressureTestConfig
 from aquaguard.event_bus import EventBus
 from aquaguard.services.pressure_test import PressureTestResult
 from aquaguard.services.scheduler import Scheduler
+from aquaguard.storage.state import StateStore
 
 
 @pytest.fixture
@@ -189,3 +191,59 @@ class TestSchedulerFailureReporting:
         await sched._run_scheduled_test()
 
         valve.open_valve.assert_not_awaited()
+
+
+class TestSchedulerInterval:
+    """Date-based interval — replaced iso_week % N, which broke at New Year."""
+
+    def _sched(self, **kwargs) -> Scheduler:
+        return Scheduler(
+            PressureTestConfig(), MagicMock(), MagicMock(), EventBus(), **kwargs
+        )
+
+    def test_no_history_means_due(self):
+        sched = self._sched()
+        assert sched._interval_elapsed(date(2026, 8, 9)) is True
+
+    def test_two_weeks_elapsed_is_due(self):
+        sched = self._sched()
+        sched._last_scheduled = date(2026, 7, 26)
+        assert sched._interval_elapsed(date(2026, 8, 9)) is True
+
+    def test_one_week_elapsed_is_not_due(self):
+        sched = self._sched()
+        sched._last_scheduled = date(2026, 7, 26)
+        assert sched._interval_elapsed(date(2026, 8, 2)) is False
+
+    def test_year_boundary_keeps_cadence(self):
+        """REGRESSION for the iso-week bug: 2026 has 53 ISO weeks, so
+        week-parity skipped both w53 and w1 → a 3-week gap. Date arithmetic
+        runs exactly 14 days later regardless of week numbering."""
+        sched = self._sched()
+        sched._last_scheduled = date(2026, 12, 27)  # Sunday, ISO week 52
+        assert sched._interval_elapsed(date(2027, 1, 3)) is False   # 7 days
+        assert sched._interval_elapsed(date(2027, 1, 10)) is True   # 14 days
+
+    async def test_seeds_from_state_store(self, tmp_path):
+        store = StateStore(str(tmp_path / "state.json"))
+        await store.load()
+        await store.set("last_scheduled_test_date", "2026-07-26")
+
+        sched = self._sched(state_store=store)
+        await sched._load_last_scheduled()
+        assert sched._last_scheduled == date(2026, 7, 26)
+
+    async def test_seeds_from_database_when_state_empty(self, tmp_path, database):
+        """Upgrade path: no state key yet — the pressure-test history knows
+        when the last scheduled test ran, so the cadence carries over."""
+        await database.save_pressure_test(
+            test_type="scheduled", result="pass",
+            initial_pressure=5.0, final_pressure=4.9,
+        )
+        store = StateStore(str(tmp_path / "state.json"))
+        await store.load()
+
+        sched = self._sched(state_store=store, database=database)
+        await sched._load_last_scheduled()
+        # Row was inserted just now; CURRENT_TIMESTAMP is UTC.
+        assert sched._last_scheduled == datetime.now(timezone.utc).date()

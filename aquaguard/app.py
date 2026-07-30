@@ -115,7 +115,7 @@ class AquaGuardApp:
         self.valve_service.set_test_interlock(self.pressure_test)
         self.scheduler = Scheduler(
             config.pressure_test, self.pressure_test, self.valve_service,
-            self.event_bus,
+            self.event_bus, self.state_store, self.database,
         )
         self.consumption_monitor = ConsumptionMonitor(
             config.consumption, self.event_bus,

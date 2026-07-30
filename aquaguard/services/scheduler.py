@@ -1,5 +1,13 @@
 """Scheduled pressure tests (default every other Sunday at 02:00).
 
+The interval is enforced by calendar arithmetic: a test fires on the
+configured weekday, inside the trigger window, when at least
+`schedule_interval_weeks * 7` days have passed since the last scheduled
+run. The last-run date persists in the StateStore and is seeded from the
+pressure-test table on first run, so the cadence survives restarts and
+upgrades. (The previous `iso_week % interval` rule broke around New Year:
+a 53-week ISO year gave a 3-week gap.)
+
 On failure: up to 3 retries with 60-minute intervals.
 Sequence: close valve → run test → open valve.
 
@@ -17,14 +25,18 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 from aquaguard.config import PressureTestConfig
 from aquaguard.event_bus import EventBus
 from aquaguard.services.pressure_test import PressureTestService, PressureTestResult
 from aquaguard.services.valve_service import ValveService
+from aquaguard.storage.database import Database
+from aquaguard.storage.state import StateStore
 
 log = logging.getLogger(__name__)
+
+_STATE_KEY = "last_scheduled_test_date"
 
 MAX_RETRIES = 3
 RETRY_INTERVAL_MIN = 60
@@ -40,17 +52,36 @@ class Scheduler:
         pressure_test: PressureTestService,
         valve_service: ValveService,
         event_bus: EventBus,
+        state_store: StateStore | None = None,
+        database: Database | None = None,
     ):
         self._config = config
         self._pressure_test = pressure_test
         self._valve = valve_service
         self._bus = event_bus
-        self._last_test_date: str | None = None
-        # Track which week-number we last ran in to enforce interval
-        self._last_test_iso_week: int | None = None
+        self._state_store = state_store
+        self._db = database
+        self._last_scheduled: date | None = None
+
+    async def _load_last_scheduled(self) -> None:
+        """Restore the last scheduled-run date: StateStore first, then the
+        pressure-test history (pre-upgrade installs have no state key)."""
+        raw = self._state_store.get(_STATE_KEY) if self._state_store else None
+        if not raw and self._db is not None:
+            try:
+                raw = await self._db.get_last_scheduled_test_date()
+            except Exception:
+                log.exception("Could not seed last scheduled date from database")
+        if raw:
+            try:
+                self._last_scheduled = date.fromisoformat(str(raw))
+                log.info("Last scheduled test date: %s", self._last_scheduled)
+            except ValueError:
+                log.warning("Unparseable last scheduled date: %r", raw)
 
     async def run(self) -> None:
         """Main scheduler loop — runs forever, checks every 30s."""
+        await self._load_last_scheduled()
         weekday_name = [
             "Monday", "Tuesday", "Wednesday", "Thursday",
             "Friday", "Saturday", "Sunday",
@@ -69,26 +100,20 @@ class Scheduler:
             except Exception:
                 log.exception("Scheduler error")
 
-    def _is_scheduled_day(self, now: datetime) -> bool:
-        """Check if today is the right weekday and week interval."""
-        if now.weekday() != self._config.schedule_weekday:
-            return False
-
-        # Use ISO week number to determine interval.
-        # Run on weeks where (iso_week % interval) == 0.
-        iso_week = now.isocalendar()[1]
-        return (iso_week % self._config.schedule_interval_weeks) == 0
+    def _interval_elapsed(self, today: date) -> bool:
+        """True when the configured number of weeks has passed since the
+        last scheduled run (or none is known). Pure date arithmetic — no
+        ISO-week anomalies at year boundaries, and a run missed because the
+        device was off is made up on the next matching weekday."""
+        if self._last_scheduled is None:
+            return True
+        elapsed = (today - self._last_scheduled).days
+        return elapsed >= self._config.schedule_interval_weeks * 7
 
     async def _check_schedule(self) -> None:
         now = datetime.now()
-        today_str = now.strftime("%Y-%m-%d")
 
-        # Already ran today?
-        if self._last_test_date == today_str:
-            return
-
-        # Not the right day?
-        if not self._is_scheduled_day(now):
+        if now.weekday() != self._config.schedule_weekday:
             return
 
         target = datetime(
@@ -98,13 +123,18 @@ class Scheduler:
         deadline = target + timedelta(minutes=TRIGGER_WINDOW_MIN)
 
         # Only trigger within the 30-minute window after scheduled time
-        if target <= now <= deadline:
-            self._last_test_date = today_str
-            await self._run_scheduled_test()
-        elif now > deadline:
-            # Missed the window today — mark as done so we don't trigger later
-            self._last_test_date = today_str
-            log.debug("Missed today's test window, skipping")
+        if not (target <= now <= deadline):
+            return
+
+        if not self._interval_elapsed(now.date()):
+            return
+
+        # Record before running: a same-day retrigger (or a failed run)
+        # must not restart the sequence within the window.
+        self._last_scheduled = now.date()
+        if self._state_store is not None:
+            await self._state_store.set(_STATE_KEY, self._last_scheduled.isoformat())
+        await self._run_scheduled_test()
 
     async def _run_scheduled_test(self) -> None:
         """Run a scheduled pressure test with retry logic.
