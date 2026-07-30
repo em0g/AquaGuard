@@ -112,3 +112,80 @@ class TestSchedulerValveRestoration:
 
         valve.open_valve.assert_not_awaited()
         assert valve.is_open is False
+
+
+class TestSchedulerFailureReporting:
+    """Total failure must be visible (event) and must not strand the house
+    without water unless the failure is a confirmed leak."""
+
+    async def test_all_retries_alarm1_restores_water_and_emits(
+        self, fast_scheduler, event_bus
+    ):
+        """ALARM1 = low supply pressure / sensor issue, not a measured leak:
+        the valve must be reopened and scheduled_test_failed emitted."""
+        sched, valve, pressure_test = fast_scheduler
+        valve.is_open = True
+
+        async def close_side_effect():
+            valve.is_open = False
+
+        async def open_side_effect():
+            valve.is_open = True
+
+        valve.close_valve.side_effect = close_side_effect
+        valve.open_valve.side_effect = open_side_effect
+        pressure_test.run_test.return_value = PressureTestResult.ALARM1
+
+        events = []
+
+        async def on_failed(**kwargs):
+            events.append(kwargs)
+
+        event_bus.subscribe("scheduled_test_failed", on_failed)
+
+        await sched._run_scheduled_test()
+
+        valve.open_valve.assert_awaited_once()
+        assert valve.is_open is True
+        assert len(events) == 1
+        assert events[0]["result"] == "alarm1"
+        assert events[0]["valve_open"] is True
+
+    async def test_all_retries_alarm2_emits_failed_event(
+        self, fast_scheduler, event_bus
+    ):
+        """Even when the valve stays closed, the failure must be announced."""
+        sched, valve, pressure_test = fast_scheduler
+        valve.is_open = True
+
+        async def close_side_effect():
+            valve.is_open = False
+
+        valve.close_valve.side_effect = close_side_effect
+        pressure_test.run_test.return_value = PressureTestResult.ALARM2
+
+        events = []
+
+        async def on_failed(**kwargs):
+            events.append(kwargs)
+
+        event_bus.subscribe("scheduled_test_failed", on_failed)
+
+        await sched._run_scheduled_test()
+
+        assert len(events) == 1
+        assert events[0]["result"] == "alarm2"
+        assert events[0]["valve_open"] is False
+
+    async def test_failure_with_initially_closed_valve_stays_closed(
+        self, fast_scheduler
+    ):
+        """Valve manually closed before the test: a non-leak failure must not
+        open it — restore means restore, not force-open."""
+        sched, valve, pressure_test = fast_scheduler
+        valve.is_open = False
+        pressure_test.run_test.return_value = PressureTestResult.ALARM1
+
+        await sched._run_scheduled_test()
+
+        valve.open_valve.assert_not_awaited()

@@ -3,6 +3,12 @@
 On failure: up to 3 retries with 60-minute intervals.
 Sequence: close valve → run test → open valve.
 
+If every retry fails, `scheduled_test_failed` is emitted and the valve is
+restored to its pre-test position — EXCEPT when the final result is ALARM2
+(sustained pressure drop, i.e. a measured leak), where the valve stays
+closed as a failsafe. ALARM1/ABORTED mean low supply pressure or a sensor
+problem; leaving the house without water over those helps nobody.
+
 The scheduler only triggers within a 30-minute window after the scheduled
 time to prevent accidental tests on service restart during the day.
 """
@@ -109,6 +115,7 @@ class Scheduler:
         """
         log.info("Starting scheduled pressure test")
         was_open = self._valve.is_open
+        result = PressureTestResult.ABORTED
 
         for attempt in range(1, MAX_RETRIES + 1):
             log.info("Scheduled test attempt %d/%d", attempt, MAX_RETRIES)
@@ -137,4 +144,23 @@ class Scheduler:
                 )
                 await asyncio.sleep(RETRY_INTERVAL_MIN * 60)
 
-        log.error("Scheduled pressure test failed after %d attempts", MAX_RETRIES)
+        log.error(
+            "Scheduled pressure test failed after %d attempts (last result: %s)",
+            MAX_RETRIES, result.value,
+        )
+        # Restore water unless the last attempt measured an actual leak.
+        # ALARM2 keeps the valve closed as a failsafe; the latched alarm
+        # (buzzer/GPIO/HA) tells the owner why the water is off.
+        if result != PressureTestResult.ALARM2 and was_open:
+            log.warning(
+                "Restoring water despite failed test — %s is not a confirmed leak",
+                result.value,
+            )
+            await self._valve.open_valve()
+        await self._bus.emit(
+            "scheduled_test_failed",
+            result=result.value,
+            attempts=MAX_RETRIES,
+            valve_open=self._valve.is_open,
+            timestamp=datetime.now().isoformat(),
+        )
