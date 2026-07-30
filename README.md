@@ -114,6 +114,21 @@ Dashboard: `http://<pi-ip>:8080`. Home Assistant should pick up the device
 automatically via MQTT discovery once its MQTT integration is configured
 against the same broker.
 
+## Security model
+
+The web dashboard is **deliberately unauthenticated** and binds `0.0.0.0:8080`
+(deliberate decision, 2026-07-30). The threat model is a trusted home LAN:
+anyone who can reach port 8080 can operate the valve, reset alarms and drive
+the LED debug panel — the same things anyone in the house can do with the
+physical buttons. MQTT is the only credentialed interface
+(`config-secrets.yaml`).
+
+If that assumption ever stops holding for your network (guest WiFi on the same
+subnet, untrusted IoT devices, port forwarding), do **not** expose the port
+as-is: put the dashboard behind a reverse proxy with auth, firewall port 8080
+to specific clients, or keep the device on an isolated VLAN with only the MQTT
+broker reachable.
+
 ## Host system settings (outside the app)
 
 Two Raspberry Pi OS defaults caused production failures on the reference

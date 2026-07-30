@@ -51,7 +51,7 @@ Common event names (grep for `emit(` to find producers, `subscribe(` for consume
 
 1. `hardware/` — thin wrappers over I2C/SPI/GPIO. `I2CBus`, `ValveDriver`, `PressureSensor`, `TemperatureSensor` (1-wire), `FlowSensor` (SPI), `LedRing` (WS281x), `Buzzer`, `Buttons`, `GpioAlarm`. These are the only modules that touch real hardware. Tests mock them via `tests/conftest.py` (`AsyncMock(spec=I2CBus)` etc.).
 2. `services/` — domain logic. `ValveService`, `SensorService`, `AlarmManager`, `PressureTestService`, `Scheduler`. Services hold state, emit events, and call hardware.
-3. `integrations/` + `web/` — outward-facing. `MqttClient`, `HADiscovery`, `WebServer` (FastAPI + WebSocket). They subscribe to events and translate them outward; they never own state.
+3. `integrations/` + `web/` — outward-facing. `MqttClient`, `HADiscovery`, `WebServer` (FastAPI + WebSocket). They subscribe to events and translate them outward; they never own state. The web dashboard is deliberately unauthenticated (trusted-LAN decision, see README "Security model") — don't re-flag it or add auth without being asked.
 
 **Storage** (`aquaguard/storage/`): `StateStore` is a JSON file (`/var/lib/aquaguard/state.json`) for valve open/closed and latched alarms — survives restart. `Database` is SQLite (`/var/lib/aquaguard/aquaguard.db`) for pressure-test history and flow episodes.
 

@@ -1,13 +1,18 @@
 """Centralised alarm management.
 
 Alarm types:
-  - pressure_low: pressure below threshold during normal operation
+  - pressure_low: pressure test stage 1 failed (line below threshold)
   - temp_low: temperature below frost threshold
   - leak_detected: pressure test detected leak
   - external: external alarm GPIO triggered
   - flow_burst: sustained very high flow, valve closed by ConsumptionMonitor
   - flow_long_episode: flow ran past the shutoff duration (opt-in)
   - flow_large_volume: episode passed the shutoff volume (opt-in)
+
+There is deliberately no low-pressure check during normal operation: with the
+valve open the sensor sees mains pressure, which varies with supply, and the
+pressure sensor is already published to Home Assistant where an automation
+can alert on any threshold without a code change.
 """
 
 from __future__ import annotations
