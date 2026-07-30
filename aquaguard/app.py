@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import signal
 
@@ -32,6 +33,27 @@ from aquaguard.storage.state import StateStore
 from aquaguard.web.server import WebServer
 
 log = logging.getLogger(__name__)
+
+# How long to let uvicorn unwind on its own before the TaskGroup tears
+# everything down. Bounded so a stuck web server can never hold up the
+# service stop; systemd's own limit is 90 s.
+WEB_SHUTDOWN_TIMEOUT = 5.0
+
+
+class _ShutdownRequested(Exception):
+    """Raised inside the TaskGroup when SIGTERM/SIGINT arrives, so the group
+    cancels every task and `run` falls through to cleanup."""
+
+
+class _SignalFreeUvicornServer(uvicorn.Server):
+    """uvicorn.Server.serve() replaces the process's SIGTERM/SIGINT handlers
+    with its own, which only stops the web server — the rest of the TaskGroup
+    would run on until systemd gives up and SIGKILLs us without cleanup.
+    AquaGuardApp owns process signals, so uvicorn must not capture them."""
+
+    @contextlib.contextmanager
+    def capture_signals(self):
+        yield
 
 
 class AquaGuardApp:
@@ -87,7 +109,8 @@ class AquaGuardApp:
             self.gpio_alarm, self.state_store,
         )
         self.pressure_test = PressureTestService(
-            self.pressure_sensor, config.alarms, self.event_bus, self.database
+            self.pressure_sensor, config.alarms, self.event_bus, self.database,
+            self.alarm_manager,
         )
         self.scheduler = Scheduler(
             config.pressure_test, self.pressure_test, self.valve_service,
@@ -156,7 +179,7 @@ class AquaGuardApp:
         self.gpio_alarm.cleanup()
 
     async def run(self) -> None:
-        """Start all async tasks and run until cancelled."""
+        """Start all async tasks and run until SIGTERM/SIGINT."""
         await self._init_all()
 
         # Configure uvicorn for embedding
@@ -166,7 +189,22 @@ class AquaGuardApp:
             port=self.config.web.port,
             log_level="warning",
         )
-        uvi_server = uvicorn.Server(uvi_config)
+        uvi_server = _SignalFreeUvicornServer(uvi_config)
+
+        loop = asyncio.get_running_loop()
+        stop = asyncio.Event()
+        for sig in (signal.SIGTERM, signal.SIGINT):
+            loop.add_signal_handler(sig, stop.set)
+
+        async def wait_for_shutdown(serve_task: asyncio.Task[None]) -> None:
+            await stop.wait()
+            # Ask uvicorn to close its listener and run its lifespan shutdown
+            # first. Cancelling serve() outright works, but starlette logs the
+            # resulting lifespan CancelledError as an ERROR traceback on every
+            # single restart, which buries real errors in the journal.
+            uvi_server.should_exit = True
+            await asyncio.wait({serve_task}, timeout=WEB_SHUTDOWN_TIMEOUT)
+            raise _ShutdownRequested
 
         try:
             async with asyncio.TaskGroup() as tg:
@@ -178,12 +216,15 @@ class AquaGuardApp:
                 tg.create_task(self.gpio_alarm.run())
                 tg.create_task(self.leds.run_animation_loop())
                 tg.create_task(self.flow_sensor.run())
-                tg.create_task(uvi_server.serve())
+                serve_task = tg.create_task(uvi_server.serve())
+                tg.create_task(wait_for_shutdown(serve_task))
                 log.info(
                     "AquaGuard running — dashboard at http://0.0.0.0:%d",
                     self.config.web.port,
                 )
-        except* KeyboardInterrupt:
-            log.info("Keyboard interrupt received")
+        except* _ShutdownRequested:
+            log.info("Shutdown signal received, stopping")
         finally:
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                loop.remove_signal_handler(sig)
             await self._cleanup()
