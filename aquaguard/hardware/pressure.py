@@ -11,6 +11,7 @@ Our read_i2c_block_data returns device-order (MSB first), so NO swap needed.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from aquaguard.hardware.i2c_bus import I2CBus
@@ -22,6 +23,12 @@ _REG_CONVERSION = 0x00
 _CONFIG_DATA = [0xC4, 0x03]
 _RAW_FACTOR = 0.000390625
 _RAW_OFFSET = -2.5
+# The config word selects 128 SPS => ~7.8 ms per conversion. Reading straight
+# after the trigger returns the *previous* conversion — right after power-up
+# that register still holds 0, a plausible source of the spurious 0-bar
+# glitches seen in production. Wait one conversion period so the value read
+# is the one just triggered.
+_CONVERSION_DELAY = 0.010
 
 
 class PressureSensor:
@@ -46,6 +53,7 @@ class PressureSensor:
             self._addr, _REG_CONFIG, _CONFIG_DATA
         )
         await self._i2c.write_byte(self._addr, _REG_CONVERSION)
+        await asyncio.sleep(_CONVERSION_DELAY)
         # Read 2 bytes — ADS1015 sends MSB first
         data = await self._i2c.read_i2c_block_data(
             self._addr, _REG_CONVERSION, 2

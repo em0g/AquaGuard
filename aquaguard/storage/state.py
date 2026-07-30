@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 from functools import partial
 from pathlib import Path
 from typing import Any
@@ -47,12 +48,21 @@ class StateStore:
         try:
             text = json.dumps(self._data, indent=2)
             loop = asyncio.get_running_loop()
-            await loop.run_in_executor(
-                None, partial(self._path.write_text, text, encoding="utf-8")
-            )
+            await loop.run_in_executor(None, self._write_atomic, text)
             self._dirty = False
         except Exception:
             log.exception("Failed to save state")
+
+    def _write_atomic(self, text: str) -> None:
+        """Tempfile + rename: power loss mid-write must never corrupt the
+        file — load() falls back to defaults on parse errors, which would
+        silently report the valve open and any latched alarm cleared."""
+        tmp = self._path.with_suffix(".json.tmp")
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, self._path)
 
     def get(self, key: str, default: Any = None) -> Any:
         return self._data.get(key, default)

@@ -37,6 +37,7 @@ class ValveDriver:
         self._addr = address
         self._poweroff_delay = poweroff_delay
         self._poweroff_id = 0
+        self._poweroff_task: asyncio.Task | None = None
 
     async def init(self) -> None:
         """Driver init — only ensures motor power is off.
@@ -70,7 +71,11 @@ class ValveDriver:
         """Schedule motor power-off with ID guard (only latest timer fires)."""
         self._poweroff_id += 1
         current_id = self._poweroff_id
-        asyncio.ensure_future(self._delayed_poweroff(current_id))
+        # Keep a reference — a bare ensure_future can be garbage-collected
+        # mid-flight, and a vanished power-off leaves the motor energised.
+        self._poweroff_task = asyncio.ensure_future(
+            self._delayed_poweroff(current_id)
+        )
 
     async def _delayed_poweroff(self, guard_id: int) -> None:
         """Wait then cut power — but only if no newer command has been issued."""

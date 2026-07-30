@@ -58,6 +58,9 @@ class WebServer:
         self._leds = leds
         self._clients: set[WebSocket] = set()
         self._pressure_test_callback: callable | None = None
+        # References to fire-and-forget tasks — a bare ensure_future can be
+        # garbage-collected mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
 
         self.app = FastAPI(title="AquaGuard", version="0.1.0")
         self._setup_routes()
@@ -112,7 +115,7 @@ class WebServer:
         @app.post("/api/pressure-test")
         async def run_pressure_test():
             if self._pressure_test_callback:
-                asyncio.ensure_future(self._pressure_test_callback())
+                self._spawn(self._pressure_test_callback())
                 return {"status": "started"}
             return {"status": "error", "message": "Pressure test not available"}
 
@@ -207,6 +210,12 @@ class WebServer:
                 if not self._clients and self._leds.debug_active:
                     await self._leds.exit_debug()
 
+    def _spawn(self, coro) -> None:
+        """Run a coroutine in the background, keeping a reference until done."""
+        task = asyncio.ensure_future(coro)
+        self._bg_tasks.add(task)
+        task.add_done_callback(self._bg_tasks.discard)
+
     async def _handle_ws_message(self, data: str) -> None:
         try:
             msg = json.loads(data)
@@ -217,7 +226,7 @@ class WebServer:
                 await self._valve.close_valve()
             elif cmd == "pressure_test":
                 if self._pressure_test_callback:
-                    asyncio.ensure_future(self._pressure_test_callback())
+                    self._spawn(self._pressure_test_callback())
             elif cmd == "alarm_reset":
                 await self._alarms.clear_alarm()
             elif cmd == "led_debug":
@@ -242,7 +251,9 @@ class WebServer:
 
     async def _broadcast(self, message: dict) -> None:
         dead: list[WebSocket] = []
-        for ws in self._clients:
+        # Snapshot: clients connect/disconnect concurrently with the awaits
+        # below, and mutating the set mid-iteration raises RuntimeError.
+        for ws in list(self._clients):
             try:
                 await ws.send_json(message)
             except Exception:
