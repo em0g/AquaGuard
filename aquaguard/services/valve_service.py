@@ -40,6 +40,29 @@ class ValveService:
         self._bus = event_bus
         self._state = ValveState.CLOSED
         self._motor_delay = motor_delay
+        # Serialises open/close: each holds the lock through the full motor
+        # movement, so concurrent commands (button + HA + web) queue up
+        # instead of interleaving OPENING/CLOSING states.
+        self._lock = asyncio.Lock()
+        self._test_interlock = None  # PressureTestService, wired by the app
+
+    def set_test_interlock(self, pressure_test) -> None:
+        """Register the pressure test service.
+
+        A valve command during a running test would invalidate the test:
+        opening restores mains pressure mid-measurement (bogus PASS), and the
+        movement itself perturbs readings (bogus ALARM2). The owner's intent
+        wins — the test is aborted and recorded as such, then the command runs.
+        """
+        self._test_interlock = pressure_test
+
+    def _abort_running_test(self, action: str) -> None:
+        test = self._test_interlock
+        if test is not None and test.is_running:
+            log.warning(
+                "Valve %s requested during pressure test — aborting test", action
+            )
+            test.abort()
 
     @property
     def state(self) -> ValveState:
@@ -64,33 +87,37 @@ class ValveService:
 
     async def open_valve(self) -> None:
         """Open the water valve."""
-        if self._state in (ValveState.OPEN, ValveState.OPENING):
-            log.debug("Valve already open/opening, ignoring")
-            return
-        self._state = ValveState.OPENING
-        await self._bus.emit("valve_state_changed", state=self._state.value)
-        await self._driver.open_valve()
-        await self._state_store.set("valve_open", True)
-        # Stay in OPENING for motor movement duration, then transition
-        await asyncio.sleep(self._motor_delay)
-        self._state = ValveState.OPEN
-        await self._bus.emit("valve_state_changed", state=self._state.value)
-        log.info("Valve opened")
+        self._abort_running_test("open")
+        async with self._lock:
+            if self._state in (ValveState.OPEN, ValveState.OPENING):
+                log.debug("Valve already open/opening, ignoring")
+                return
+            self._state = ValveState.OPENING
+            await self._bus.emit("valve_state_changed", state=self._state.value)
+            await self._driver.open_valve()
+            await self._state_store.set("valve_open", True)
+            # Stay in OPENING for motor movement duration, then transition
+            await asyncio.sleep(self._motor_delay)
+            self._state = ValveState.OPEN
+            await self._bus.emit("valve_state_changed", state=self._state.value)
+            log.info("Valve opened")
 
     async def close_valve(self) -> None:
         """Close the water valve."""
-        if self._state in (ValveState.CLOSED, ValveState.CLOSING):
-            log.debug("Valve already closed/closing, ignoring")
-            return
-        self._state = ValveState.CLOSING
-        await self._bus.emit("valve_state_changed", state=self._state.value)
-        await self._driver.close_valve()
-        await self._state_store.set("valve_open", False)
-        # Stay in CLOSING for motor movement duration, then transition
-        await asyncio.sleep(self._motor_delay)
-        self._state = ValveState.CLOSED
-        await self._bus.emit("valve_state_changed", state=self._state.value)
-        log.info("Valve closed")
+        self._abort_running_test("close")
+        async with self._lock:
+            if self._state in (ValveState.CLOSED, ValveState.CLOSING):
+                log.debug("Valve already closed/closing, ignoring")
+                return
+            self._state = ValveState.CLOSING
+            await self._bus.emit("valve_state_changed", state=self._state.value)
+            await self._driver.close_valve()
+            await self._state_store.set("valve_open", False)
+            # Stay in CLOSING for motor movement duration, then transition
+            await asyncio.sleep(self._motor_delay)
+            self._state = ValveState.CLOSED
+            await self._bus.emit("valve_state_changed", state=self._state.value)
+            log.info("Valve closed")
 
     async def _on_button_on(self) -> None:
         await self.open_valve()

@@ -112,6 +112,7 @@ class AquaGuardApp:
             self.pressure_sensor, config.alarms, self.event_bus, self.database,
             self.alarm_manager,
         )
+        self.valve_service.set_test_interlock(self.pressure_test)
         self.scheduler = Scheduler(
             config.pressure_test, self.pressure_test, self.valve_service,
             self.event_bus,
