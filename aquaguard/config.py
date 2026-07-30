@@ -36,6 +36,9 @@ class HardwareConfig:
     valve_address: int = 0x60
     pressure_address: int = 0x48
     temp_device_id: str = ""  # empty = auto-detect the first 28-* 1-wire device
+    spi_bus: int = 0          # MAX35101 flow sensor
+    spi_device: int = 0
+    spi_speed_hz: int = 1_000_000
     motor_poweroff_delay: int = 8
     led_count: int = 34
     buzzer_pin: int = 23

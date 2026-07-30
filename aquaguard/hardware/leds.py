@@ -297,6 +297,14 @@ class LedRing:
             self._strip.setPixelColor(i, color)
         self._strip.show()
 
+    def cleanup(self) -> None:
+        """Blank the strip on shutdown — a dark ring means the service is
+        down; the last rendered frame would show stale valve state."""
+        try:
+            self._clear()
+        except Exception:
+            pass
+
     async def run_animation_loop(self) -> None:
         """Main LED loop — fast during animations, idle when static."""
         tick = 0

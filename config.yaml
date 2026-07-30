@@ -13,6 +13,9 @@ hardware:
   valve_address: 0x60
   pressure_address: 0x48
   temp_device_id: ""        # empty = auto-detect; set to a 28-xxxx id to pin one
+  spi_bus: 0                # MAX35101 flow sensor
+  spi_device: 0
+  spi_speed_hz: 1000000
   motor_poweroff_delay: 8
   led_count: 34
   buzzer_pin: 23

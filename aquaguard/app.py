@@ -79,7 +79,9 @@ class AquaGuardApp:
             device_id=config.hardware.temp_device_id
         )
         self.flow_sensor = FlowSensor(
-            spi_bus=0, spi_device=0, spi_speed_hz=1_000_000,
+            spi_bus=config.hardware.spi_bus,
+            spi_device=config.hardware.spi_device,
+            spi_speed_hz=config.hardware.spi_speed_hz,
         )
         self.buzzer = Buzzer(pin=config.hardware.buzzer_pin)
         self.buttons = Buttons(
@@ -178,6 +180,10 @@ class AquaGuardApp:
         self.flow_sensor.cleanup()
         self.buzzer.cleanup()
         self.gpio_alarm.cleanup()
+        self.buttons.cleanup()
+        # Dark ring = service not running; leaving the last frame lit would
+        # show stale valve state.
+        self.leds.cleanup()
 
     async def run(self) -> None:
         """Start all async tasks and run until SIGTERM/SIGINT."""

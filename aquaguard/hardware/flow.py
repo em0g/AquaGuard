@@ -51,6 +51,11 @@ FLOW_END_THRESHOLD = 20.0
 SAMPLES_PER_READING = 30  # matches original C code
 MAX_TOF_DIFF = 1e-7  # sanity check — ~2 L/s max
 FLOW_DEBOUNCE_COUNT = 3  # consecutive readings above threshold to start episode
+# Consecutive unreadable cycles before a FLOW episode is force-closed. The
+# end condition is "flow below threshold", so a sensor that stops answering
+# mid-episode would otherwise leave the episode open forever and freeze the
+# consumption monitor in its last state.
+SENSOR_FAIL_LIMIT = 10
 
 # Display smoothing — EMA (exponential moving average)
 EMA_ALPHA = 0.3  # weight of new sample (0.3 = slow response, good noise rejection)
@@ -84,10 +89,9 @@ _OP_RESET = 0x04
 _OP_INITIALIZE = 0x05
 _OP_FLASH = 0x06
 
-# TOF results: tof_diff is at byte offset 61 in the full result struct
-# up_measurement (30 bytes) + down_measurement (30 bytes) = 60 bytes after start_register
-# tof_diff = 4 bytes (int16 integer + uint16 fraction)
-_TOF_DIFF_OFFSET = 61  # from start of read (after the opcode byte)
+# TOF results: after the address byte the payload is up_measurement (30
+# bytes) + down_measurement (30 bytes) + tof_diff (int16 integer + uint16
+# fraction), so tof_diff sits at payload offset 60 — see _read_tof_diff.
 
 # ── Default register values (from flow.c handler defaults) ──────────────
 # TOF1: no_pulses=15, pulse_launch_divider=1 (1MHz), edge=0, bias_charge=0
@@ -147,6 +151,7 @@ class FlowSensor:
         self._episode_callback = None
         self._measurement_callback = None
         self._above_threshold_count = 0
+        self._failed_reads = 0
         self._ema_flow = 0.0  # smoothed flow for display
         self.available = False
 
@@ -394,8 +399,7 @@ class FlowSensor:
                 tof_diff = await loop.run_in_executor(None, self._measure_averaged)
             except Exception:
                 log.exception("Flow measurement error")
-                self._ema_flow *= (1 - EMA_ALPHA)  # decay toward zero
-                continue
+                tof_diff = None
 
             now = time.monotonic()
             dt = now - last_time
@@ -404,7 +408,20 @@ class FlowSensor:
             if tof_diff is None:
                 # Not enough valid samples — decay EMA toward zero
                 self._ema_flow *= (1 - EMA_ALPHA)
+                self._failed_reads += 1
+                if (
+                    self._state == FlowState.FLOW
+                    and self._failed_reads >= SENSOR_FAIL_LIMIT
+                ):
+                    log.warning(
+                        "Flow sensor unreadable for %d cycles — force-closing "
+                        "episode (%.3f L in %.0f s)",
+                        self._failed_reads,
+                        self._episode_volume, self._episode_duration,
+                    )
+                    await self._end_episode()
                 continue
+            self._failed_reads = 0
 
             flow_lph = self.tof_diff_to_flow_rate(tof_diff)
             speed_ms = tof_diff * FACTOR
@@ -435,18 +452,7 @@ class FlowSensor:
                 if flow_lph < FLOW_END_THRESHOLD:
                     log.info("Flow episode ended: %.3f L in %.0f s",
                              self._episode_volume, self._episode_duration)
-                    if self._episode_callback:
-                        try:
-                            await self._episode_callback(
-                                self._episode_volume,
-                                round(self._episode_duration),
-                            )
-                        except Exception:
-                            log.exception("Episode callback error")
-                    self._episode_volume = 0.0
-                    self._episode_duration = 0.0
-                    self._episode_start = None
-                    self._state = FlowState.IDLE
+                    await self._end_episode()
 
             if self._measurement_callback:
                 try:
@@ -459,6 +465,21 @@ class FlowSensor:
                     )
                 except Exception:
                     log.exception("Measurement callback error")
+
+    async def _end_episode(self) -> None:
+        """Record the finished episode and return to IDLE."""
+        if self._episode_callback:
+            try:
+                await self._episode_callback(
+                    self._episode_volume,
+                    round(self._episode_duration),
+                )
+            except Exception:
+                log.exception("Episode callback error")
+        self._episode_volume = 0.0
+        self._episode_duration = 0.0
+        self._episode_start = None
+        self._state = FlowState.IDLE
 
     # ── Cleanup ─────────────────────────────────────────────────────────
 

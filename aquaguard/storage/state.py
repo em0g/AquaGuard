@@ -25,7 +25,6 @@ class StateStore:
     def __init__(self, path: str = "/var/lib/aquaguard/state.json"):
         self._path = Path(path)
         self._data: dict[str, Any] = dict(_DEFAULTS)
-        self._dirty = False
 
     async def load(self) -> None:
         if not self._path.exists():
@@ -49,7 +48,6 @@ class StateStore:
             text = json.dumps(self._data, indent=2)
             loop = asyncio.get_running_loop()
             await loop.run_in_executor(None, self._write_atomic, text)
-            self._dirty = False
         except Exception:
             log.exception("Failed to save state")
 

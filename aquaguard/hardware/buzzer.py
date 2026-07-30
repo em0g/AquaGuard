@@ -41,7 +41,7 @@ class Buzzer:
                 await asyncio.sleep(off_ms / 1000)
 
     async def alarm_pattern(self) -> None:
-        """Continuous alarm beep pattern (3 rapid beeps)."""
+        """Alarm signal: 3 rapid beeps, played once per trigger."""
         await self.beep(on_ms=100, off_ms=100, count=3)
 
     def cleanup(self) -> None:

@@ -44,6 +44,9 @@ class EventBus:
             results = await asyncio.gather(*tasks, return_exceptions=True)
             for result in results:
                 if isinstance(result, Exception):
-                    log.exception(
-                        "Error in event handler for %s: %s", event, result
+                    # log.exception would log the *current* exception (none
+                    # here); exc_info=result attaches the handler's traceback.
+                    log.error(
+                        "Error in event handler for %s: %r",
+                        event, result, exc_info=result,
                     )

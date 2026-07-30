@@ -39,7 +39,7 @@ class MqttClient:
         """Set up MQTT client and start background network loop."""
         self._loop = asyncio.get_running_loop()
         self._client = mqtt.Client(
-            callback_api_version=mqtt.CallbackAPIVersion.VERSION1,
+            callback_api_version=mqtt.CallbackAPIVersion.VERSION2,
             client_id=f"aquaguard_{self._device.id}",
             clean_session=True,
         )
@@ -63,9 +63,10 @@ class MqttClient:
         log.info("MQTT connecting to %s:%d", self._config.host, self._config.port)
 
     def _on_connect(
-        self, client: mqtt.Client, userdata: Any, flags: dict, rc: int
+        self, client: mqtt.Client, userdata: Any, flags: Any,
+        reason_code: Any, properties: Any,
     ) -> None:
-        if rc == 0:
+        if not reason_code.is_failure:
             log.info("MQTT connected")
             # Publish online status
             client.publish(self.availability_topic, "online", qos=1, retain=True)
@@ -76,15 +77,18 @@ class MqttClient:
             if self._loop:
                 self._loop.call_soon_threadsafe(self._connected.set)
         else:
-            log.error("MQTT connect failed with rc=%d", rc)
+            log.error("MQTT connect failed: %s", reason_code)
 
     def _on_disconnect(
-        self, client: mqtt.Client, userdata: Any, rc: int
+        self, client: mqtt.Client, userdata: Any, disconnect_flags: Any,
+        reason_code: Any, properties: Any,
     ) -> None:
         if self._loop:
             self._loop.call_soon_threadsafe(self._connected.clear)
-        if rc != 0:
-            log.warning("MQTT disconnected unexpectedly (rc=%d), will reconnect", rc)
+        if reason_code.is_failure:
+            log.warning(
+                "MQTT disconnected unexpectedly (%s), will reconnect", reason_code
+            )
 
     def _on_message(
         self, client: mqtt.Client, userdata: Any, msg: mqtt.MQTTMessage
