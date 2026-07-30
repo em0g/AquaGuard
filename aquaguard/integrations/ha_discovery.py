@@ -53,9 +53,26 @@ class HADiscovery:
         self._id = device_config.id
         self._pressure_test_callback: callable | None = None
         self._last_successful_test: str | None = None
+        # References to fire-and-forget tasks — a bare ensure_future can be
+        # garbage-collected mid-flight.
+        self._bg_tasks: set[asyncio.Task] = set()
 
         # Listen for successful scheduled tests
         self._bus.subscribe("scheduled_test_passed", self._on_scheduled_test_passed)
+        # Push state immediately when it changes — the 30 s loop alone makes
+        # the HA valve switch bounce back visually after every command.
+        for event in (
+            "valve_state_changed",
+            "alarm_triggered",
+            "alarm_cleared",
+            "consumption_warning_long_episode",
+            "consumption_warning_large_volume",
+            "consumption_warning_drip",
+            "consumption_warning_burst",
+            "flow_shutoff",
+            "scheduled_test_failed",
+        ):
+            self._bus.subscribe(event, self._on_state_event)
 
     def set_pressure_test_callback(self, cb: callable) -> None:
         """Register callback for pressure test button press."""
@@ -255,7 +272,18 @@ class HADiscovery:
 
     async def _on_pressure_test_command(self, topic: str, payload: str) -> None:
         if self._pressure_test_callback:
-            asyncio.ensure_future(self._pressure_test_callback())
+            task = asyncio.ensure_future(self._pressure_test_callback())
+            self._bg_tasks.add(task)
+            task.add_done_callback(self._bg_tasks.discard)
+
+    async def _on_state_event(self, **kwargs) -> None:
+        """Event-driven state push; the 30 s loop remains as a safety net."""
+        if not self._mqtt.is_connected:
+            return
+        try:
+            await self.publish_state()
+        except Exception:
+            log.exception("Error publishing HA state on event")
 
     async def _on_scheduled_test_passed(self, **kwargs) -> None:
         ts = kwargs.get("timestamp", "")
