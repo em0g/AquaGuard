@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
@@ -20,9 +20,18 @@ def mock_pressure():
 
 
 @pytest.fixture
-async def pressure_test_svc(mock_pressure, alarms_config, event_bus, database):
+def mock_alarm_manager():
+    mgr = MagicMock()
+    mgr.trigger_alarm = AsyncMock()
+    return mgr
+
+
+@pytest.fixture
+async def pressure_test_svc(
+    mock_pressure, alarms_config, event_bus, database, mock_alarm_manager
+):
     svc = PressureTestService(
-        mock_pressure, alarms_config, event_bus, database
+        mock_pressure, alarms_config, event_bus, database, mock_alarm_manager
     )
     # Speed up tests by reducing intervals and readings
     svc.STAGE1_READINGS = 4
@@ -39,11 +48,17 @@ class TestPressureTest:
         result = await pressure_test_svc.run_test("manual")
         assert result == PressureTestResult.PASS
 
-    async def test_alarm1_low_pressure(self, pressure_test_svc, mock_pressure):
+    async def test_alarm1_low_pressure(
+        self, pressure_test_svc, mock_pressure, mock_alarm_manager
+    ):
         """Stage 1 alarm when pressure below 1.5 bar."""
         mock_pressure.read_pressure.return_value = 1.0
         result = await pressure_test_svc.run_test("manual")
         assert result == PressureTestResult.ALARM1
+        # The alarm must latch via AlarmManager (buzzer/GPIO/persistence/HA),
+        # not just float by as a bus event.
+        mock_alarm_manager.trigger_alarm.assert_awaited_once()
+        assert mock_alarm_manager.trigger_alarm.await_args.args[0] == "pressure_low"
 
     async def test_alarm2_leak(self, pressure_test_svc, mock_pressure):
         """Stage 2 alarm when pressure drops more than 1.0 bar sustained."""
@@ -63,6 +78,9 @@ class TestPressureTest:
         pressure_test_svc.STAGE2_READINGS = pressure_test_svc.LEAK_DEBOUNCE_READINGS + 2
         result = await pressure_test_svc.run_test("manual")
         assert result == PressureTestResult.ALARM2
+        mock_alarm_manager = pressure_test_svc._alarms
+        mock_alarm_manager.trigger_alarm.assert_awaited_once()
+        assert mock_alarm_manager.trigger_alarm.await_args.args[0] == "leak_detected"
 
     async def test_alarm2_ignores_single_sensor_spike(
         self, pressure_test_svc, mock_pressure

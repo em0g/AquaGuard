@@ -26,6 +26,7 @@ from typing import Any
 from aquaguard.config import AlarmsConfig
 from aquaguard.event_bus import EventBus
 from aquaguard.hardware.pressure import PressureSensor
+from aquaguard.services.alarm_manager import AlarmManager
 from aquaguard.storage.database import Database
 
 log = logging.getLogger(__name__)
@@ -53,11 +54,13 @@ class PressureTestService:
         config: AlarmsConfig,
         event_bus: EventBus,
         database: Database,
+        alarm_manager: AlarmManager,
     ):
         self._pressure = pressure
         self._config = config
         self._bus = event_bus
         self._db = database
+        self._alarms = alarm_manager
         self._running = False
         self._abort = False
 
@@ -117,10 +120,11 @@ class PressureTestService:
                     )
                     result = PressureTestResult.ALARM1
                     final_pressure = final_stage1
-                    await self._bus.emit(
-                        "alarm_triggered",
-                        alarm_type="pressure_low",
-                        message=f"Pressure test stage 1 failed: {final_stage1:.2f} bar",
+                    # Latch via AlarmManager (buzzer, GPIO out, persistence,
+                    # HA binary sensor) — it re-emits alarm_triggered itself.
+                    await self._alarms.trigger_alarm(
+                        "pressure_low",
+                        f"Pressure test stage 1 failed: {final_stage1:.2f} bar",
                     )
                 else:
                     # --- Stage 2: 15 minutes ---
@@ -147,10 +151,9 @@ class PressureTestService:
                                 )
                                 result = PressureTestResult.ALARM2
                                 final_pressure = p
-                                await self._bus.emit(
-                                    "alarm_triggered",
-                                    alarm_type="leak_detected",
-                                    message=f"Leak detected: pressure drop {drop:.2f} bar",
+                                await self._alarms.trigger_alarm(
+                                    "leak_detected",
+                                    f"Leak detected: pressure drop {drop:.2f} bar",
                                 )
                                 break
                             log.debug(

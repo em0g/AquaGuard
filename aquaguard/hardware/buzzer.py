@@ -9,7 +9,9 @@ log = logging.getLogger(__name__)
 
 try:
     import RPi.GPIO as GPIO
-except ImportError:
+except (ImportError, RuntimeError):
+    # RuntimeError: RPi.GPIO imports fine off-device but refuses to initialise
+    # ("This module can only be run on a Raspberry Pi!"), so tests can import us.
     GPIO = None  # type: ignore[assignment]
 
 
