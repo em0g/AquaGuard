@@ -212,9 +212,12 @@ Ruled out so far:
   feed explanation.
 - **The LED code.** `aquaguard/hardware/leds.py` was verified against the
   original firmware: same ring indices (`0–29`), same status LEDs (30–33), same
-  colours, same 800 kHz / DMA 10 / `WS2811_STRIP_RGB` setup. A second device
-  running a byte-identical clone of this tree shows the glitch while this one
-  does not — identical code cannot be the difference.
+  800 kHz / DMA 10 / `WS2811_STRIP_RGB` setup. A second device running a
+  byte-identical clone of this tree shows the glitch while this one does not —
+  identical code cannot be the difference. (The colour *constants* were changed
+  to pure primaries in 2026-08 and deliberately no longer match the original
+  firmware, but a pixel's colour value has no bearing on whether its
+  transmission is corrupted.)
 
 Not ruled out — and the only lead left:
 
@@ -288,6 +291,14 @@ cd aquaguard-src && git pull
 sudo cp aquaguard/hardware/leds.py /opt/aquaguard/aquaguard/hardware/leds.py
 sudo systemctl restart aquaguard
 ```
+
+If that `git pull` aborts with `error: Your local changes to the following files
+would be overwritten by merge`, the clone itself has local edits — usually from
+experimenting directly in the clone instead of in `/opt/aquaguard`. Discard them
+(`git checkout -- <file>`) or set them aside (`git stash`) and pull again. Keep
+the clone pristine: it is the reference for what is actually deployed, and a
+dirty clone silently breaks the "this device runs an unmodified tree" assumption
+that debugging (e.g. the ring-glitch comparison above) relies on.
 
 ## Local development (off-device)
 

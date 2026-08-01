@@ -38,16 +38,18 @@ except ImportError:
     def Color(r: int, g: int, b: int) -> int:  # type: ignore[misc]
         return (r << 16) | (g << 8) | b
 
-# Colours
-RED = Color(0xD8, 0x00, 0x10)
-GREEN = Color(0x66, 0xFF, 0x33)
-BLUE = Color(0x00, 0xDD, 0xFF)
+# Colours. Pure primaries by choice — the original firmware used tinted values
+# (RED 0xD80010, GREEN 0x66FF33, BLUE 0x00DDFF); these are not a lost calibration
+# to be restored.
+RED = Color(0xFF, 0x00, 0x00)
+GREEN = Color(0x00, 0xFF, 0x00)
+BLUE = Color(0x00, 0x00, 0xFF)
 WHITE = Color(0xFF, 0xFF, 0xFF)
 OFF = Color(0, 0, 0)
 
 # Dim tail colours for spin animation
-GREEN_DIM = Color(0x20, 0x50, 0x10)
-RED_DIM = Color(0x40, 0x00, 0x05)
+GREEN_DIM = Color(0x00, 0x40, 0x00)
+RED_DIM = Color(0x40, 0x00, 0x00)
 
 # Status LED positions
 POS_ON = 30

@@ -21,7 +21,10 @@ pytest tests/test_valve.py     # one file
 pytest -k pressure_drop -xvs   # one test by name
 
 # Deploy to RPi (root owns /opt/aquaguard, so rsync as root)
-rsync -av --rsync-path="sudo rsync" aquaguard/ pi@<pi-host>:/opt/aquaguard/aquaguard/
+# --exclude '__pycache__': the local .pyc files are built for the dev machine's
+# Python and are dead weight on the Pi, which may run a different minor version.
+rsync -av --exclude '__pycache__' --rsync-path="sudo rsync" \
+    aquaguard/ pi@<pi-host>:/opt/aquaguard/aquaguard/
 ssh pi@<pi-host> 'sudo systemctl restart aquaguard'
 ssh pi@<pi-host> 'sudo journalctl -u aquaguard -f'
 
